@@ -1429,35 +1429,75 @@ function InvestorCharts({ investments }) {
     return <div className="empty-state"><div className="empty-icon">📊</div><div className="empty-text">No data to chart yet</div></div>;
   }
 
-  // Area chart: portfolio value over time (cumulative by date)
+  // Area chart: from earliest investment date → today, with monthly data points
   const timeData = (() => {
     const sorted = [...investments].sort((a, b) => new Date(a.date) - new Date(b.date));
-    let cumInvested = 0, cumCurrent = 0;
-    return sorted.map(inv => {
-      cumInvested += Number(inv.amount || 0);
-      cumCurrent += Number(inv.currentValue || 0);
-      return {
-        date: fmtDate(inv.date),
-        Invested: cumInvested,
-        Value: cumCurrent,
-      };
-    });
+    const totalInvested = sorted.reduce((s, i) => s + Number(i.amount || 0), 0);
+    const totalCurrent  = sorted.reduce((s, i) => s + Number(i.currentValue || 0), 0);
+
+    // Build monthly ticks from first investment date to today
+    const startDate = new Date(sorted[0].date);
+    const today     = new Date();
+    startDate.setDate(1); // start of that month
+
+    const points = [];
+    const cursor = new Date(startDate);
+
+    while (cursor <= today) {
+      // Sum investments that existed by this month
+      const cutoff = new Date(cursor);
+      cutoff.setMonth(cutoff.getMonth() + 1); // end of this month
+
+      let cumInvested = 0;
+      sorted.forEach(inv => {
+        if (new Date(inv.date) < cutoff) {
+          cumInvested += Number(inv.amount || 0);
+        }
+      });
+
+      // Interpolate current value: scale proportionally to how much of total invested was in by this date
+      const fraction = totalInvested > 0 ? cumInvested / totalInvested : 0;
+      // For last point (today) use exact current value; others interpolate
+      const isLastPoint = cursor.getFullYear() === today.getFullYear() && cursor.getMonth() === today.getMonth();
+      const cumCurrent = isLastPoint ? totalCurrent : Math.round(cumInvested + (totalCurrent - totalInvested) * fraction);
+
+      const label = cursor.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+      points.push({ date: label, Invested: cumInvested, Value: cumCurrent });
+
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+
+    // Ensure today is always the last point with exact values
+    if (points.length > 0) {
+      points[points.length - 1].Invested = totalInvested;
+      points[points.length - 1].Value    = totalCurrent;
+    }
+
+    return points;
   })();
 
   // Bar chart: per investment
-  const barData = investments.map(inv => ({
-    name: (inv.note || 'Investment').length > 20 ? (inv.note || 'Investment').substr(0, 18) + '…' : (inv.note || 'Investment'),
-    Invested: Number(inv.amount || 0),
-    Value: Number(inv.currentValue || 0),
-  }));
+  const barData = [...investments]
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .map(inv => ({
+      name: (inv.note || 'Investment').length > 18 ? (inv.note || 'Investment').substr(0, 16) + '…' : (inv.note || 'Investment'),
+      Invested: Number(inv.amount || 0),
+      Value: Number(inv.currentValue || 0),
+    }));
 
-  const axisStyle = { fill: '#9a9a8a', fontSize: 12, fontFamily: 'DM Sans' };
+  const axisStyle = { fill: '#9a9a8a', fontSize: 11, fontFamily: 'Calibri' };
+  const fmtY = v => '₹' + (v >= 1e7 ? (v/1e7).toFixed(1)+'Cr' : v >= 1e5 ? (v/1e5).toFixed(1)+'L' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v);
+
+  // Duration label
+  const firstDate = investments.length ? new Date([...investments].sort((a,b) => new Date(a.date)-new Date(b.date))[0].date) : null;
+  const durationLabel = firstDate ? `${firstDate.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })} → Today` : '';
 
   return (
     <div>
       <div className="chart-card">
         <div className="chart-title">Portfolio Growth Over Time</div>
-        <ResponsiveContainer width="100%" height={280}>
+        <div style={{ fontSize: 12, color: 'var(--t2)', marginBottom: 16, marginTop: -10 }}>{durationLabel}</div>
+        <ResponsiveContainer width="100%" height={300}>
           <AreaChart data={timeData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
             <defs>
               <linearGradient id="gradInv" x1="0" y1="0" x2="0" y2="1">
@@ -1470,12 +1510,14 @@ function InvestorCharts({ investments }) {
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis dataKey="date" tick={axisStyle} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={v => '₹' + (v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v)} tick={axisStyle} axisLine={false} tickLine={false} />
+            <XAxis dataKey="date" tick={axisStyle} axisLine={false} tickLine={false}
+              interval={timeData.length > 18 ? Math.floor(timeData.length / 9) : 0} />
+            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={60} />
             <Tooltip content={<ChartTooltip />} />
             <Legend wrapperStyle={{ fontSize: 12, color: '#a0a090' }} />
-            <Area type="monotone" dataKey="Invested" stroke="#8a6820" strokeWidth={2} fill="url(#gradInv)" />
-            <Area type="monotone" dataKey="Value" stroke="#c9a84c" strokeWidth={2} fill="url(#gradVal)" />
+            <Area type="monotone" dataKey="Invested" stroke="#8a6820" strokeWidth={2} fill="url(#gradInv)" dot={false} />
+            <Area type="monotone" dataKey="Value" stroke="#c9a84c" strokeWidth={2} fill="url(#gradVal)" dot={false}
+              activeDot={{ r: 5, fill: '#c9a84c', stroke: '#0a0a0a', strokeWidth: 2 }} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -1486,7 +1528,7 @@ function InvestorCharts({ investments }) {
           <BarChart data={barData} margin={{ top: 10, right: 10, left: 10, bottom: 30 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
             <XAxis dataKey="name" tick={{ ...axisStyle, fontSize: 11 }} axisLine={false} tickLine={false} angle={-20} textAnchor="end" />
-            <YAxis tickFormatter={v => '₹' + (v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v)} tick={axisStyle} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={60} />
             <Tooltip content={<ChartTooltip />} />
             <Legend wrapperStyle={{ fontSize: 12, color: '#a0a090' }} />
             <Bar dataKey="Invested" fill="#8a6820" radius={[4,4,0,0]} />
