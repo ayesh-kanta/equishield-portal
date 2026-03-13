@@ -36,8 +36,8 @@ const CSS = `
   --radius:    12px;
   --radius-sm: 8px;
   --shadow:    0 8px 32px rgba(0,0,0,0.6);
-  --fd: 'Calibri', Georgia, serif;
-  --fb: 'Calibri', system-ui, sans-serif;
+  --fd:        'Calibri', Georgia, serif;
+  --fb:        'Calibri', system-ui, sans-serif;
 }
 *, *::before, *::after { box-sizing: border-box; }
 .eq-app { min-height: 100vh; background: var(--bg); color: var(--t1); font-family: var(--fb); }
@@ -301,6 +301,16 @@ select.field-input option { background: #1a1a1a; color: var(--t1); }
 .breakdown-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--gold3), var(--gold)); }
 .breakdown-nums { display: flex; justify-content: space-between; font-size: 13px; color: var(--t2); }
 
+/* ── WITHDRAWAL ── */
+.withdraw-card { background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius); padding: 24px; max-width: 520px; }
+.withdraw-history { margin-top: 28px; }
+.withdraw-item { background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius-sm); padding: 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+.withdraw-item-left .wd-desc { font-size: 14px; font-weight: 500; color: var(--t1); }
+.withdraw-item-left .wd-date { font-size: 12px; color: var(--t2); margin-top: 2px; }
+.withdraw-item-right { display: flex; align-items: center; gap: 12px; }
+.badge-warn { background: rgba(224,154,53,0.12); color: var(--warn); border: 1px solid rgba(224,154,53,0.3); }
+.admin-wd-row { display: flex; align-items: center; gap: 8px; }
+
 /* ── RESPONSIVE ── */
 @media (max-width: 900px) {
   .cards-row.cols-4 { grid-template-columns: repeat(2, 1fr); }
@@ -560,6 +570,7 @@ function AdminPanel({ adminUser, onLogout }) {
   const [tab, setTab] = useState('investors');
   const [investors, setInvestors] = useState([]);
   const [investments, setInvestments] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
   const [showToast, toastEl] = useToast();
 
   // Real-time listeners
@@ -570,7 +581,10 @@ function AdminPanel({ adminUser, onLogout }) {
     const unsub2 = onSnapshot(collection(db, 'investments'), snap => {
       setInvestments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
-    return () => { unsub1(); unsub2(); };
+    const unsub3 = onSnapshot(collection(db, 'withdrawals'), snap => {
+      setWithdrawals(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, []);
 
   // Summary stats
@@ -578,9 +592,11 @@ function AdminPanel({ adminUser, onLogout }) {
   const totalInvested = investments.reduce((s, i) => s + Number(i.amount || 0), 0);
   const totalReturns = totalAUM - totalInvested;
 
+  const pendingWd = withdrawals.filter(w => w.status === 'pending').length;
   const tabs = [
     { id: 'investors', label: 'Investors' },
     { id: 'investments', label: 'Investments' },
+    { id: 'withdrawals', label: `Withdrawals${pendingWd > 0 ? ` (${pendingWd})` : ''}` },
     { id: 'add-investor', label: 'Add Investor' },
     { id: 'add-investment', label: 'Add Investment' },
     { id: 'settings', label: 'Settings' },
@@ -615,7 +631,7 @@ function AdminPanel({ adminUser, onLogout }) {
           </div>
           <div className="stat-card">
             <div className="stat-label">Total Returns</div>
-            <div className={`stat-value ${totalReturns >= 0 ? 'green' : 'td-red'}`}>{fmt(totalReturns)}</div>
+            <div className={`stat-value ${totalReturns >= 0 ? 'green' : ''}`}>{fmt(totalReturns)}</div>
             <div className="stat-sub">{fmtPct(pct(totalInvested, totalAUM))}</div>
           </div>
           <div className="stat-card">
@@ -632,8 +648,9 @@ function AdminPanel({ adminUser, onLogout }) {
           ))}
         </div>
 
-        {tab === 'investors' && <AdminInvestorsTab investors={investors} investments={investments} />}
+        {tab === 'investors' && <AdminInvestorsTab investors={investors} investments={investments} showToast={showToast} />}
         {tab === 'investments' && <AdminInvestmentsTab investors={investors} investments={investments} showToast={showToast} />}
+        {tab === 'withdrawals' && <AdminWithdrawalsTab withdrawals={withdrawals} investors={investors} investments={investments} showToast={showToast} />}
         {tab === 'add-investor' && <AddInvestorTab onDone={() => setTab('investors')} showToast={showToast} />}
         {tab === 'add-investment' && <AddInvestmentTab investors={investors} onDone={() => setTab('investments')} showToast={showToast} />}
         {tab === 'settings' && <SettingsTab investors={investors} showToast={showToast} />}
@@ -643,7 +660,7 @@ function AdminPanel({ adminUser, onLogout }) {
 }
 
 // ─── ADMIN: INVESTORS TAB ─────────────────────────────────────────────────────
-function AdminInvestorsTab({ investors, investments }) {
+function AdminInvestorsTab({ investors, investments, showToast }) {
   const invMap = {};
   investors.forEach(i => {
     const invs = investments.filter(x => x.investorId === i.id);
@@ -653,6 +670,21 @@ function AdminInvestorsTab({ investors, investments }) {
       count: invs.length,
     };
   });
+
+  const deleteInvestor = async (inv) => {
+    if (!window.confirm(`Delete ${inv.name}? This will also delete all their investments and withdrawal requests. This cannot be undone.`)) return;
+    try {
+      // Delete all investments
+      const invDocs = investments.filter(x => x.investorId === inv.id);
+      for (const d of invDocs) await deleteDoc(doc(db, 'investments', d.id));
+      // Delete all withdrawals
+      const wdSnap = await getDocs(query(collection(db, 'withdrawals'), where('investorId', '==', inv.id)));
+      for (const d of wdSnap.docs) await deleteDoc(doc(db, 'withdrawals', d.id));
+      // Delete investor
+      await deleteDoc(doc(db, 'investors', inv.id));
+      showToast(`${inv.name} removed ✓`);
+    } catch (e) { showToast('Delete failed', 'error'); console.error(e); }
+  };
 
   return (
     <div>
@@ -674,10 +706,11 @@ function AdminInvestorsTab({ investors, investments }) {
               <div key={inv.id} className="investor-card">
                 <div className="inv-card-head">
                   <div className="inv-avatar">{initials(inv.name)}</div>
-                  <div>
+                  <div style={{ flex: 1 }}>
                     <div className="inv-name">{inv.name}</div>
                     <div className="inv-phone">{inv.phone} · {stats.count} investment{stats.count !== 1 ? 's' : ''}</div>
                   </div>
+                  <button className="btn btn-danger btn-sm btn-icon" title="Remove investor" onClick={() => deleteInvestor(inv)}><TrashIcon /></button>
                 </div>
                 <div className="inv-stats">
                   <div className="inv-stat">
@@ -1066,11 +1099,120 @@ function SettingsTab({ investors, showToast }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ─── ADMIN: WITHDRAWALS TAB ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+function AdminWithdrawalsTab({ withdrawals, investors, investments, showToast }) {
+  const investorMap = Object.fromEntries(investors.map(i => [i.id, i.name]));
+  const sorted = [...withdrawals].sort((a, b) => new Date(b.requestDate) - new Date(a.requestDate));
+
+  const approve = async (wd) => {
+    if (!window.confirm(`Approve withdrawal of ${fmt(wd.amount)} for ${investorMap[wd.investorId]}?`)) return;
+    try {
+      // Reduce currentValue from investor's investments proportionally (from largest first)
+      const invList = investments
+        .filter(x => x.investorId === wd.investorId && Number(x.currentValue) > 0)
+        .sort((a, b) => Number(b.currentValue) - Number(a.currentValue));
+      let remaining = Number(wd.amount);
+      for (const inv of invList) {
+        if (remaining <= 0) break;
+        const cur = Number(inv.currentValue);
+        const deduct = Math.min(cur, remaining);
+        await updateDoc(doc(db, 'investments', inv.id), { currentValue: cur - deduct });
+        remaining -= deduct;
+      }
+      await updateDoc(doc(db, 'withdrawals', wd.id), { status: 'approved', processedDate: new Date().toISOString().split('T')[0] });
+      showToast(`Withdrawal approved ✓`);
+    } catch (e) { showToast('Failed to approve', 'error'); console.error(e); }
+  };
+
+  const reject = async (wd) => {
+    if (!window.confirm(`Reject this withdrawal request?`)) return;
+    try {
+      await updateDoc(doc(db, 'withdrawals', wd.id), { status: 'rejected', processedDate: new Date().toISOString().split('T')[0] });
+      showToast('Withdrawal rejected');
+    } catch { showToast('Failed', 'error'); }
+  };
+
+  const pending = sorted.filter(w => w.status === 'pending');
+  const processed = sorted.filter(w => w.status !== 'pending');
+
+  return (
+    <div>
+      <div className="sec-head">
+        <div>
+          <div className="sec-title">Withdrawal Requests</div>
+          <div className="sec-sub">{pending.length} pending · {processed.length} processed</div>
+        </div>
+      </div>
+
+      {pending.length === 0 && processed.length === 0 && (
+        <div className="empty-state"><div className="empty-icon">💸</div><div className="empty-text">No withdrawal requests yet</div></div>
+      )}
+
+      {pending.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--warn)', marginBottom: 12, fontWeight: 600 }}>
+            ● Pending Requests
+          </div>
+          <div className="table-wrap" style={{ marginBottom: 24 }}>
+            <table>
+              <thead><tr><th>Investor</th><th>Date</th><th>Amount</th><th>Note</th><th>Actions</th></tr></thead>
+              <tbody>
+                {pending.map(wd => (
+                  <tr key={wd.id}>
+                    <td className="td-name">{investorMap[wd.investorId] || '—'}</td>
+                    <td className="td-muted">{fmtDate(wd.requestDate)}</td>
+                    <td className="td-gold">{fmt(wd.amount)}</td>
+                    <td><span className="td-note">{wd.note || '—'}</span></td>
+                    <td>
+                      <div className="admin-wd-row">
+                        <button className="btn btn-sm" style={{ background: 'rgba(93,184,124,0.12)', color: 'var(--success)', border: '1px solid rgba(93,184,124,0.3)' }} onClick={() => approve(wd)}>✓ Approve</button>
+                        <button className="btn btn-danger btn-sm" onClick={() => reject(wd)}>✗ Reject</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {processed.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t2)', marginBottom: 12, fontWeight: 600 }}>
+            Processed
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Investor</th><th>Requested</th><th>Processed</th><th>Amount</th><th>Note</th><th>Status</th></tr></thead>
+              <tbody>
+                {processed.map(wd => (
+                  <tr key={wd.id}>
+                    <td className="td-name">{investorMap[wd.investorId] || '—'}</td>
+                    <td className="td-muted">{fmtDate(wd.requestDate)}</td>
+                    <td className="td-muted">{fmtDate(wd.processedDate)}</td>
+                    <td>{fmt(wd.amount)}</td>
+                    <td><span className="td-note">{wd.note || '—'}</span></td>
+                    <td><span className={`badge ${wd.status === 'approved' ? 'badge-green' : 'badge-red'}`}>{wd.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ─── INVESTOR PORTAL ─────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 function InvestorPortal({ investor, onLogout }) {
   const [tab, setTab] = useState('overview');
   const [investments, setInvestments] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
   const [profile, setProfile] = useState(investor);
   const [loading, setLoading] = useState(true);
 
@@ -1084,7 +1226,11 @@ function InvestorPortal({ investor, onLogout }) {
     const unsub2 = onSnapshot(doc(db, 'investors', investor.id), snap => {
       if (snap.exists()) setProfile(p => ({ ...p, ...snap.data() }));
     });
-    return () => { unsub1(); unsub2(); };
+    const qw = query(collection(db, 'withdrawals'), where('investorId', '==', investor.id));
+    const unsub3 = onSnapshot(qw, snap => {
+      setWithdrawals(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [investor.id]);
 
   const sorted = [...investments].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -1097,6 +1243,7 @@ function InvestorPortal({ investor, onLogout }) {
     { id: 'overview', label: 'Overview' },
     { id: 'transactions', label: 'Transactions' },
     { id: 'chart', label: 'Charts' },
+    { id: 'withdraw', label: 'Withdraw' },
   ];
 
   return (
@@ -1167,6 +1314,7 @@ function InvestorPortal({ investor, onLogout }) {
             {tab === 'overview' && <InvestorOverview investments={sorted} totalInvested={totalInvested} currentValue={currentValue} />}
             {tab === 'transactions' && <InvestorTransactions investments={sorted} />}
             {tab === 'chart' && <InvestorCharts investments={sorted} />}
+            {tab === 'withdraw' && <InvestorWithdraw investor={investor} investments={investments} withdrawals={withdrawals} currentValue={currentValue} />}
           </>
         )}
       </div>
@@ -1346,6 +1494,91 @@ function InvestorCharts({ investments }) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  );
+}
+
+// ─── INVESTOR: WITHDRAW TAB ───────────────────────────────────────────────────
+function InvestorWithdraw({ investor, investments, withdrawals, currentValue }) {
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showToast, toastEl] = useToast();
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const amt = parseFloat(amount.replace(/,/g, ''));
+    if (isNaN(amt) || amt <= 0) { showToast('Enter a valid amount', 'error'); return; }
+    if (amt > currentValue) { showToast('Amount exceeds current portfolio value', 'error'); return; }
+    setLoading(true);
+    try {
+      await addDoc(collection(db, 'withdrawals'), {
+        investorId: investor.id,
+        amount: amt,
+        note: note,
+        requestDate: new Date().toISOString().split('T')[0],
+        status: 'pending',
+      });
+      showToast('Withdrawal request submitted ✓');
+      setAmount(''); setNote('');
+    } catch { showToast('Failed to submit request', 'error'); }
+    finally { setLoading(false); }
+  };
+
+  const sorted = [...withdrawals].sort((a, b) => new Date(b.requestDate) - new Date(a.requestDate));
+
+  return (
+    <div>
+      {toastEl}
+      <div className="sec-head">
+        <div><div className="sec-title">Withdraw Funds</div><div className="sec-sub">Submit a withdrawal request to your portfolio manager</div></div>
+      </div>
+
+      <form className="withdraw-card" onSubmit={submit}>
+        <div style={{ background: 'var(--goldbg)', border: '1px solid var(--goldbord)', borderRadius: 8, padding: '12px 16px', marginBottom: 20, fontSize: 13, color: 'var(--t2)' }}>
+          Available portfolio value: <strong style={{ color: 'var(--gold)' }}>{fmt(currentValue)}</strong>
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Withdrawal Amount (₹) *</label>
+            <input className="field-input" type="number" placeholder="Enter amount to withdraw"
+              value={amount} onChange={e => setAmount(e.target.value)} min="1" />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Reason / Note</label>
+            <input className="field-input" placeholder="e.g. Partial withdrawal for personal use"
+              value={note} onChange={e => setNote(e.target.value)} />
+          </div>
+        </div>
+        <button className="btn btn-primary" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+          {loading ? 'Submitting…' : 'Submit Withdrawal Request'}
+        </button>
+        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--t3)' }}>
+          Your request will be reviewed by the portfolio manager. Funds will be processed upon approval.
+        </div>
+      </form>
+
+      {sorted.length > 0 && (
+        <div className="withdraw-history">
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t2)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 14 }}>Your Requests</div>
+          {sorted.map(wd => (
+            <div key={wd.id} className="withdraw-item">
+              <div className="withdraw-item-left">
+                <div className="wd-desc">{wd.note || 'Withdrawal request'}</div>
+                <div className="wd-date">Requested: {fmtDate(wd.requestDate)}{wd.processedDate ? ` · Processed: ${fmtDate(wd.processedDate)}` : ''}</div>
+              </div>
+              <div className="withdraw-item-right">
+                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--t1)' }}>{fmt(wd.amount)}</div>
+                <span className={`badge ${wd.status === 'approved' ? 'badge-green' : wd.status === 'rejected' ? 'badge-red' : 'badge-warn'}`}>
+                  {wd.status}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
