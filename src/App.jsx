@@ -571,6 +571,7 @@ function AdminPanel({ adminUser, onLogout }) {
   const [investors, setInvestors] = useState([]);
   const [investments, setInvestments] = useState([]);
   const [withdrawals, setWithdrawals] = useState([]);
+  const [snapshots, setSnapshots] = useState([]);
   const [showToast, toastEl] = useToast();
 
   // Real-time listeners
@@ -584,7 +585,10 @@ function AdminPanel({ adminUser, onLogout }) {
     const unsub3 = onSnapshot(collection(db, 'withdrawals'), snap => {
       setWithdrawals(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const unsub4 = onSnapshot(collection(db, 'snapshots'), snap => {
+      setSnapshots(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, []);
 
   // Summary stats
@@ -594,12 +598,13 @@ function AdminPanel({ adminUser, onLogout }) {
 
   const pendingWd = withdrawals.filter(w => w.status === 'pending').length;
   const tabs = [
-    { id: 'investors', label: 'Investors' },
-    { id: 'investments', label: 'Investments' },
-    { id: 'withdrawals', label: `Withdrawals${pendingWd > 0 ? ` (${pendingWd})` : ''}` },
-    { id: 'add-investor', label: 'Add Investor' },
-    { id: 'add-investment', label: 'Add Investment' },
-    { id: 'settings', label: 'Settings' },
+    { id: 'investors',    label: 'Investors' },
+    { id: 'investments',  label: 'Investments' },
+    { id: 'eod',          label: 'EOD Values' },
+    { id: 'withdrawals',  label: `Withdrawals${pendingWd > 0 ? ` (${pendingWd})` : ''}` },
+    { id: 'add-investor',    label: 'Add Investor' },
+    { id: 'add-investment',  label: 'Add Investment' },
+    { id: 'settings',     label: 'Settings' },
   ];
 
   return (
@@ -650,6 +655,7 @@ function AdminPanel({ adminUser, onLogout }) {
 
         {tab === 'investors' && <AdminInvestorsTab investors={investors} investments={investments} showToast={showToast} />}
         {tab === 'investments' && <AdminInvestmentsTab investors={investors} investments={investments} showToast={showToast} />}
+        {tab === 'eod' && <AdminEODTab investors={investors} investments={investments} snapshots={snapshots} showToast={showToast} />}
         {tab === 'withdrawals' && <AdminWithdrawalsTab withdrawals={withdrawals} investors={investors} investments={investments} showToast={showToast} />}
         {tab === 'add-investor' && <AddInvestorTab onDone={() => setTab('investors')} showToast={showToast} />}
         {tab === 'add-investment' && <AddInvestmentTab investors={investors} onDone={() => setTab('investments')} showToast={showToast} />}
@@ -1099,6 +1105,172 @@ function SettingsTab({ investors, showToast }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ─── ADMIN: EOD VALUES TAB ────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+function AdminEODTab({ investors, investments, snapshots, showToast }) {
+  const today = new Date().toISOString().split('T')[0];
+  const [selInv,   setSelInv]   = useState('');
+  const [date,     setDate]     = useState(today);
+  const [value,    setValue]    = useState('');
+  const [filterInv, setFilterInv] = useState('all');
+  const [editId,   setEditId]   = useState(null);
+  const [editVal,  setEditVal]  = useState('');
+  const [saving,   setSaving]   = useState(false);
+
+  const investorMap = Object.fromEntries(investors.map(i => [i.id, i.name]));
+
+  // Auto-fill current portfolio value when investor is selected
+  const autoFill = (invId) => {
+    setSelInv(invId);
+    const invs = investments.filter(x => x.investorId === invId);
+    const total = invs.reduce((s, x) => s + Number(x.currentValue || 0), 0);
+    if (total > 0) setValue(String(total));
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!selInv)  { showToast('Select an investor', 'error'); return; }
+    if (!date)    { showToast('Select a date', 'error'); return; }
+    const val = parseFloat(value.replace(/,/g, ''));
+    if (isNaN(val) || val <= 0) { showToast('Enter a valid value', 'error'); return; }
+    setSaving(true);
+    try {
+      // Use investorId+date as document ID so each date = one snapshot per investor
+      const snapId = `${selInv}_${date}`;
+      const totalInvested = investments
+        .filter(x => x.investorId === selInv)
+        .reduce((s, x) => s + Number(x.amount || 0), 0);
+      await setDoc(doc(db, 'snapshots', snapId), {
+        investorId: selInv, date, totalValue: val, totalInvested,
+      });
+      showToast(`EOD value saved for ${fmtDate(date)} ✓`);
+      setValue('');
+    } catch (err) { showToast('Failed to save', 'error'); console.error(err); }
+    finally { setSaving(false); }
+  };
+
+  const startEdit = (s) => { setEditId(s.id); setEditVal(String(s.totalValue)); };
+  const cancelEdit = () => { setEditId(null); setEditVal(''); };
+  const saveEdit = async (s) => {
+    const val = parseFloat(editVal.replace(/,/g, ''));
+    if (isNaN(val) || val <= 0) { showToast('Invalid value', 'error'); return; }
+    try {
+      await updateDoc(doc(db, 'snapshots', s.id), { totalValue: val });
+      showToast('Updated ✓'); cancelEdit();
+    } catch { showToast('Update failed', 'error'); }
+  };
+  const deleteSnap = async (id) => {
+    if (!window.confirm('Delete this snapshot?')) return;
+    try { await deleteDoc(doc(db, 'snapshots', id)); showToast('Deleted'); }
+    catch { showToast('Delete failed', 'error'); }
+  };
+
+  const filtered = (filterInv === 'all' ? snapshots : snapshots.filter(s => s.investorId === filterInv))
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  return (
+    <div>
+      <div className="sec-head">
+        <div><div className="sec-title">EOD Portfolio Values</div>
+          <div className="sec-sub">Record end-of-day values — these power the investor chart</div>
+        </div>
+      </div>
+
+      {/* Record form */}
+      <form className="form-card" onSubmit={submit} style={{ marginBottom: 28 }}>
+        <div className="settings-title">Record EOD Value</div>
+        <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr', display: 'grid', gap: 16 }}>
+          <div className="field">
+            <label className="field-label">Investor *</label>
+            <select className="field-input" value={selInv} onChange={e => autoFill(e.target.value)}>
+              <option value="">Select investor…</option>
+              {investors.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label className="field-label">Date *</label>
+            <input className="field-input" type="date" value={date} onChange={e => setDate(e.target.value)} max={today} />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Total Portfolio Value (₹) *</label>
+            <input className="field-input" type="number" placeholder="Total current value of all investments"
+              value={value} onChange={e => setValue(e.target.value)} min="0" />
+            <span style={{ fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>
+              Auto-filled from current values. Edit if the actual EOD value differs.
+            </span>
+          </div>
+        </div>
+        <button className="btn btn-primary" type="submit" disabled={saving}>
+          {saving ? 'Saving…' : '+ Save EOD Snapshot'}
+        </button>
+      </form>
+
+      {/* History table */}
+      <div className="table-toolbar">
+        <div><div className="sec-title" style={{ fontSize: 18 }}>Snapshot History</div>
+          <div className="sec-sub">{filtered.length} records</div>
+        </div>
+        <div className="filter-bar" style={{ marginBottom: 0 }}>
+          <select className="filter-select" value={filterInv} onChange={e => setFilterInv(e.target.value)}>
+            <option value="all">All Investors</option>
+            {investors.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="empty-state"><div className="empty-icon">📅</div><div className="empty-text">No snapshots recorded yet</div></div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Investor</th><th>Date</th><th>Total Invested</th><th>Portfolio Value</th><th>Return ₹</th><th>Return %</th><th>Actions</th></tr></thead>
+            <tbody>
+              {filtered.map(s => {
+                const ret = Number(s.totalValue) - Number(s.totalInvested);
+                const retPct = s.totalInvested > 0 ? (ret / s.totalInvested) * 100 : 0;
+                const isEditing = editId === s.id;
+                return (
+                  <tr key={s.id}>
+                    <td className="td-name">{investorMap[s.investorId] || '—'}</td>
+                    <td className="td-muted">{fmtDate(s.date)}</td>
+                    <td>{fmt(s.totalInvested)}</td>
+                    <td>
+                      {isEditing ? (
+                        <div className="inline-edit">
+                          <input className="inline-input" value={editVal}
+                            onChange={e => setEditVal(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveEdit(s); if (e.key === 'Escape') cancelEdit(); }}
+                            autoFocus />
+                          <button className="btn btn-sm" style={{ background: 'var(--goldbg)', color: 'var(--gold)', border: '1px solid var(--goldbord)', padding: '6px 8px' }}
+                            onClick={() => saveEdit(s)}><CheckIcon /></button>
+                          <button className="btn btn-ghost btn-sm btn-icon" onClick={cancelEdit}><XIcon /></button>
+                        </div>
+                      ) : (
+                        <span className="td-gold">{fmt(s.totalValue)}</span>
+                      )}
+                    </td>
+                    <td className={ret >= 0 ? 'td-green' : 'td-red'}>{fmt(ret)}</td>
+                    <td><span className={`badge ${ret >= 0 ? 'badge-green' : 'badge-red'}`}>{fmtPct(retPct)}</span></td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {!isEditing && <button className="btn btn-ghost btn-sm btn-icon" onClick={() => startEdit(s)}><EditIcon /></button>}
+                        <button className="btn btn-danger btn-sm btn-icon" onClick={() => deleteSnap(s.id)}><TrashIcon /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ─── ADMIN: WITHDRAWALS TAB ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 function AdminWithdrawalsTab({ withdrawals, investors, investments, showToast }) {
@@ -1213,24 +1385,21 @@ function InvestorPortal({ investor, onLogout }) {
   const [tab, setTab] = useState('overview');
   const [investments, setInvestments] = useState([]);
   const [withdrawals, setWithdrawals] = useState([]);
+  const [snapshots, setSnapshots] = useState([]);
   const [profile, setProfile] = useState(investor);
   const [loading, setLoading] = useState(true);
 
   // Real-time listener — investor's own investments only
   useEffect(() => {
-    const q = query(collection(db, 'investments'), where('investorId', '==', investor.id));
-    const unsub1 = onSnapshot(q, snap => {
-      setInvestments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    });
-    const unsub2 = onSnapshot(doc(db, 'investors', investor.id), snap => {
-      if (snap.exists()) setProfile(p => ({ ...p, ...snap.data() }));
-    });
+    const q  = query(collection(db, 'investments'), where('investorId', '==', investor.id));
     const qw = query(collection(db, 'withdrawals'), where('investorId', '==', investor.id));
-    const unsub3 = onSnapshot(qw, snap => {
-      setWithdrawals(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const qs = query(collection(db, 'snapshots'),   where('investorId', '==', investor.id));
+
+    const unsub1 = onSnapshot(q,  snap => { setInvestments(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); });
+    const unsub2 = onSnapshot(doc(db, 'investors', investor.id), snap => { if (snap.exists()) setProfile(p => ({ ...p, ...snap.data() })); });
+    const unsub3 = onSnapshot(qw, snap => { setWithdrawals(snap.docs.map(d => ({ id: d.id, ...d.data() }))); });
+    const unsub4 = onSnapshot(qs, snap => { setSnapshots(snap.docs.map(d => ({ id: d.id, ...d.data() }))); });
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [investor.id]);
 
   const sorted = [...investments].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -1313,7 +1482,7 @@ function InvestorPortal({ investor, onLogout }) {
           <>
             {tab === 'overview' && <InvestorOverview investments={sorted} totalInvested={totalInvested} currentValue={currentValue} />}
             {tab === 'transactions' && <InvestorTransactions investments={sorted} />}
-            {tab === 'chart' && <InvestorCharts investments={sorted} />}
+            {tab === 'chart' && <InvestorCharts investments={sorted} snapshots={snapshots} />}
             {tab === 'withdraw' && <InvestorWithdraw investor={investor} investments={investments} withdrawals={withdrawals} currentValue={currentValue} />}
           </>
         )}
@@ -1424,99 +1593,127 @@ function InvestorTransactions({ investments }) {
 }
 
 // ─── INVESTOR: CHARTS TAB ─────────────────────────────────────────────────────
-function InvestorCharts({ investments }) {
+function InvestorCharts({ investments, snapshots }) {
   if (investments.length === 0) {
     return <div className="empty-state"><div className="empty-icon">📊</div><div className="empty-text">No data to chart yet</div></div>;
   }
 
-  // Area chart: from earliest investment date → today, with monthly data points
+  const hasSnapshots = snapshots && snapshots.length > 0;
+
+  // Use real EOD snapshots if available, else fall back to investment dates
   const timeData = (() => {
+    if (hasSnapshots) {
+      return [...snapshots]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(s => ({
+          date:     s.date,
+          Invested: Number(s.totalInvested || 0),
+          Value:    Number(s.totalValue    || 0),
+        }));
+    }
     const sorted = [...investments].sort((a, b) => new Date(a.date) - new Date(b.date));
-    const totalInvested = sorted.reduce((s, i) => s + Number(i.amount || 0), 0);
-    const totalCurrent  = sorted.reduce((s, i) => s + Number(i.currentValue || 0), 0);
-
-    // Build monthly ticks from first investment date to today
-    const startDate = new Date(sorted[0].date);
-    const today     = new Date();
-    startDate.setDate(1); // start of that month
-
-    const points = [];
-    const cursor = new Date(startDate);
-
-    while (cursor <= today) {
-      // Sum investments that existed by this month
-      const cutoff = new Date(cursor);
-      cutoff.setMonth(cutoff.getMonth() + 1); // end of this month
-
-      let cumInvested = 0;
-      sorted.forEach(inv => {
-        if (new Date(inv.date) < cutoff) {
-          cumInvested += Number(inv.amount || 0);
-        }
-      });
-
-      // Interpolate current value: scale proportionally to how much of total invested was in by this date
-      const fraction = totalInvested > 0 ? cumInvested / totalInvested : 0;
-      // For last point (today) use exact current value; others interpolate
-      const isLastPoint = cursor.getFullYear() === today.getFullYear() && cursor.getMonth() === today.getMonth();
-      const cumCurrent = isLastPoint ? totalCurrent : Math.round(cumInvested + (totalCurrent - totalInvested) * fraction);
-
-      const label = cursor.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
-      points.push({ date: label, Invested: cumInvested, Value: cumCurrent });
-
-      cursor.setMonth(cursor.getMonth() + 1);
-    }
-
-    // Ensure today is always the last point with exact values
-    if (points.length > 0) {
-      points[points.length - 1].Invested = totalInvested;
-      points[points.length - 1].Value    = totalCurrent;
-    }
-
-    return points;
+    let ci = 0, cv = 0;
+    return sorted.map(inv => {
+      ci += Number(inv.amount || 0);
+      cv += Number(inv.currentValue || 0);
+      return { date: inv.date, Invested: ci, Value: cv };
+    });
   })();
 
-  // Bar chart: per investment
+  // Pick exactly 3-4 evenly spaced X-axis ticks
+  const smartTicks = (() => {
+    if (timeData.length <= 4) return timeData.map(d => d.date);
+    const count = 4;
+    const step  = (timeData.length - 1) / (count - 1);
+    return Array.from({ length: count }, (_, i) => timeData[Math.round(i * step)].date);
+  })();
+
+  // Auto-format tick label based on total time span
+  const totalDays = timeData.length > 1
+    ? (new Date(timeData[timeData.length - 1].date) - new Date(timeData[0].date)) / 86400000
+    : 0;
+  const fmtTick = (d) => {
+    if (!d) return '';
+    const dt = new Date(d);
+    if (totalDays <= 60)  return dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+    if (totalDays <= 400) return dt.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+    return dt.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+  };
+
+  // Bar chart
   const barData = [...investments]
     .sort((a, b) => new Date(a.date) - new Date(b.date))
     .map(inv => ({
-      name: (inv.note || 'Investment').length > 18 ? (inv.note || 'Investment').substr(0, 16) + '…' : (inv.note || 'Investment'),
-      Invested: Number(inv.amount || 0),
-      Value: Number(inv.currentValue || 0),
+      name:     (inv.note || 'Inv').length > 16 ? (inv.note||'Inv').substr(0,14)+'…' : (inv.note||'Inv'),
+      Invested: Number(inv.amount       || 0),
+      Value:    Number(inv.currentValue || 0),
     }));
 
   const axisStyle = { fill: '#9a9a8a', fontSize: 11, fontFamily: 'Calibri' };
   const fmtY = v => '₹' + (v >= 1e7 ? (v/1e7).toFixed(1)+'Cr' : v >= 1e5 ? (v/1e5).toFixed(1)+'L' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v);
 
-  // Duration label
-  const firstDate = investments.length ? new Date([...investments].sort((a,b) => new Date(a.date)-new Date(b.date))[0].date) : null;
-  const durationLabel = firstDate ? `${firstDate.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })} → Today` : '';
+  const firstDate = timeData.length ? timeData[0].date : null;
+  const lastDate  = timeData.length ? timeData[timeData.length - 1].date : null;
+  const todayStr  = new Date().toISOString().split('T')[0];
+  const rangeLabel = firstDate
+    ? `${fmtDate(firstDate)} → ${lastDate === todayStr ? 'Today' : fmtDate(lastDate)}  ·  ${timeData.length} data point${timeData.length !== 1 ? 's' : ''}`
+    : '';
 
   return (
     <div>
       <div className="chart-card">
-        <div className="chart-title">Portfolio Growth Over Time</div>
-        <div style={{ fontSize: 12, color: 'var(--t2)', marginBottom: 16, marginTop: -10 }}>{durationLabel}</div>
+        <div className="chart-title">Portfolio Value Over Time</div>
+        {rangeLabel && <div style={{ fontSize: 12, color: 'var(--t2)', marginBottom: 14, marginTop: -6 }}>{rangeLabel}</div>}
+        {!hasSnapshots && (
+          <div style={{ background: 'rgba(201,168,76,0.07)', border: '1px solid var(--goldbord)', borderRadius: 8, padding: '9px 14px', marginBottom: 14, fontSize: 12, color: 'var(--t2)' }}>
+            Showing investment dates only. For daily history, admin records EOD values in the <strong style={{ color: 'var(--gold)' }}>EOD Values</strong> tab.
+          </div>
+        )}
         <ResponsiveContainer width="100%" height={300}>
           <AreaChart data={timeData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
             <defs>
               <linearGradient id="gradInv" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#8a6820" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="#8a6820" stopOpacity={0} />
+                <stop offset="5%"  stopColor="#8a6820" stopOpacity={0.45} />
+                <stop offset="95%" stopColor="#8a6820" stopOpacity={0}    />
               </linearGradient>
               <linearGradient id="gradVal" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#c9a84c" stopOpacity={0.5} />
-                <stop offset="95%" stopColor="#c9a84c" stopOpacity={0} />
+                <stop offset="5%"  stopColor="#c9a84c" stopOpacity={0.55} />
+                <stop offset="95%" stopColor="#c9a84c" stopOpacity={0}    />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis dataKey="date" tick={axisStyle} axisLine={false} tickLine={false}
-              interval={timeData.length > 18 ? Math.floor(timeData.length / 9) : 0} />
-            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={60} />
-            <Tooltip content={<ChartTooltip />} />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+            <XAxis
+              dataKey="date"
+              ticks={smartTicks}
+              tickFormatter={fmtTick}
+              tick={axisStyle}
+              axisLine={false}
+              tickLine={false}
+              interval={0}
+            />
+            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={58} />
+            <Tooltip
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null;
+                const inv = payload.find(p => p.dataKey === 'Invested')?.value || 0;
+                const val = payload.find(p => p.dataKey === 'Value')?.value    || 0;
+                const ret = val - inv;
+                return (
+                  <div className="custom-tooltip">
+                    <div className="ct-label">{fmtDate(label)}</div>
+                    <div style={{ color: '#8a6820', fontWeight: 600, fontSize: 13 }}>Invested: {fmt(inv)}</div>
+                    <div style={{ color: '#c9a84c', fontWeight: 600, fontSize: 13 }}>Value: {fmt(val)}</div>
+                    <div style={{ color: ret >= 0 ? 'var(--success)' : 'var(--danger)', fontSize: 12, marginTop: 4 }}>
+                      Return: {fmt(ret)} ({fmtPct(inv > 0 ? (ret/inv)*100 : 0)})
+                    </div>
+                  </div>
+                );
+              }}
+            />
             <Legend wrapperStyle={{ fontSize: 12, color: '#a0a090' }} />
-            <Area type="monotone" dataKey="Invested" stroke="#8a6820" strokeWidth={2} fill="url(#gradInv)" dot={false} />
-            <Area type="monotone" dataKey="Value" stroke="#c9a84c" strokeWidth={2} fill="url(#gradVal)" dot={false}
+            <Area type="monotone" dataKey="Invested" stroke="#8a6820" strokeWidth={2}   fill="url(#gradInv)" dot={false}
+              activeDot={{ r: 4, fill: '#8a6820', stroke: '#0a0a0a', strokeWidth: 2 }} />
+            <Area type="monotone" dataKey="Value"    stroke="#c9a84c" strokeWidth={2.5} fill="url(#gradVal)" dot={false}
               activeDot={{ r: 5, fill: '#c9a84c', stroke: '#0a0a0a', strokeWidth: 2 }} />
           </AreaChart>
         </ResponsiveContainer>
@@ -1525,20 +1722,21 @@ function InvestorCharts({ investments }) {
       <div className="chart-card">
         <div className="chart-title">Invested vs Current Value — Per Investment</div>
         <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={barData} margin={{ top: 10, right: 10, left: 10, bottom: 30 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis dataKey="name" tick={{ ...axisStyle, fontSize: 11 }} axisLine={false} tickLine={false} angle={-20} textAnchor="end" />
-            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={60} />
+          <BarChart data={barData} margin={{ top: 10, right: 10, left: 10, bottom: 32 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+            <XAxis dataKey="name" tick={{ ...axisStyle, fontSize: 11 }} axisLine={false} tickLine={false} angle={-18} textAnchor="end" interval={0} />
+            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={58} />
             <Tooltip content={<ChartTooltip />} />
             <Legend wrapperStyle={{ fontSize: 12, color: '#a0a090' }} />
             <Bar dataKey="Invested" fill="#8a6820" radius={[4,4,0,0]} />
-            <Bar dataKey="Value" fill="#c9a84c" radius={[4,4,0,0]} />
+            <Bar dataKey="Value"    fill="#c9a84c" radius={[4,4,0,0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>
     </div>
   );
 }
+
 
 // ─── INVESTOR: WITHDRAW TAB ───────────────────────────────────────────────────
 function InvestorWithdraw({ investor, investments, withdrawals, currentValue }) {
