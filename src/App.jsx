@@ -36,8 +36,8 @@ const CSS = `
   --radius:    12px;
   --radius-sm: 8px;
   --shadow:    0 8px 32px rgba(0,0,0,0.6);
-  --fd:        'Cormorant Garamond', Georgia, serif;
-  --fb:        'DM Sans', system-ui, sans-serif;
+  --fd: 'Calibri', Georgia, serif;
+  --fb: 'Calibri', system-ui, sans-serif;
 }
 *, *::before, *::after { box-sizing: border-box; }
 .eq-app { min-height: 100vh; background: var(--bg); color: var(--t1); font-family: var(--fb); }
@@ -615,7 +615,7 @@ function AdminPanel({ adminUser, onLogout }) {
           </div>
           <div className="stat-card">
             <div className="stat-label">Total Returns</div>
-            <div className={`stat-value ${totalReturns >= 0 ? 'green' : ''}`}>{fmt(totalReturns)}</div>
+            <div className={`stat-value ${totalReturns >= 0 ? 'green' : 'td-red'}`}>{fmt(totalReturns)}</div>
             <div className="stat-sub">{fmtPct(pct(totalInvested, totalAUM))}</div>
           </div>
           <div className="stat-card">
@@ -1144,11 +1144,11 @@ function InvestorPortal({ investor, onLogout }) {
           </div>
           <div className="stat-card">
             <div className="stat-label">Total Returns</div>
-            <div className={`stat-value ${totalReturns >= 0 ? 'green' : ''}`}>{fmt(totalReturns)}</div>
+            <div className={`stat-value ${totalReturns >= 0 ? 'green' : 'td-red'}`}>{fmt(totalReturns)}</div>
           </div>
           <div className="stat-card">
             <div className="stat-label">Return %</div>
-            <div className={`stat-value ${returnPct >= 0 ? 'green' : ''}`}>{fmtPct(returnPct)}</div>
+            <div className={`stat-value ${returnPct >= 0 ? 'green' : 'td-red'}`}>{fmtPct(returnPct)}</div>
           </div>
         </div>
 
