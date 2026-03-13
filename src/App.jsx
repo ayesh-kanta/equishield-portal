@@ -1,0 +1,1398 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  Equishield Investment Group — Full-Stack Investor Transparency Portal
+//  Admin Panel + Investor Portal with Firebase Firestore real-time sync
+// ─────────────────────────────────────────────────────────────────────────────
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  collection, doc, getDoc, getDocs, onSnapshot,
+  setDoc, addDoc, updateDoc, deleteDoc, query, where,
+} from 'firebase/firestore';
+import { db } from './firebase';
+import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend,
+} from 'recharts';
+
+// ─── GLOBAL CSS INJECTION ────────────────────────────────────────────────────
+const CSS = `
+:root {
+  --bg:        #0a0a0a;
+  --bg2:       #111111;
+  --bg3:       #161616;
+  --bg4:       #1c1c1c;
+  --gold:      #c9a84c;
+  --gold2:     #e8c87a;
+  --gold3:     #8a6820;
+  --goldbg:    rgba(201,168,76,0.08);
+  --goldbord:  rgba(201,168,76,0.25);
+  --t1:        #f5f5f0;
+  --t2:        #a0a090;
+  --t3:        #555548;
+  --bord:      rgba(255,255,255,0.07);
+  --success:   #5db87c;
+  --danger:    #e05555;
+  --warn:      #e09a35;
+  --radius:    12px;
+  --radius-sm: 8px;
+  --shadow:    0 8px 32px rgba(0,0,0,0.6);
+  --fd:        'Cormorant Garamond', Georgia, serif;
+  --fb:        'DM Sans', system-ui, sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; }
+.eq-app { min-height: 100vh; background: var(--bg); color: var(--t1); font-family: var(--fb); }
+
+/* ── LAYOUT ── */
+.page-center { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.shell { display: flex; flex-direction: column; min-height: 100vh; }
+.topbar {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(10,10,10,0.92); backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--bord);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; height: 64px;
+}
+.topbar-brand { display: flex; align-items: center; gap: 12px; }
+.topbar-brand-name { font-family: var(--fd); font-size: 22px; font-weight: 600; color: var(--t1); letter-spacing: 0.02em; }
+.topbar-brand-tag { font-size: 11px; color: var(--t2); letter-spacing: 0.12em; text-transform: uppercase; }
+.topbar-right { display: flex; align-items: center; gap: 16px; }
+.topbar-user { font-size: 13px; color: var(--t2); }
+.main-content { flex: 1; padding: 28px 24px 60px; max-width: 1200px; width: 100%; margin: 0 auto; }
+
+/* ── TABS ── */
+.tabs { display: flex; gap: 2px; background: var(--bg2); border-radius: var(--radius); padding: 4px; margin-bottom: 28px; overflow-x: auto; }
+.tab-btn {
+  flex: 1; min-width: max-content; padding: 9px 18px; border: none; border-radius: 9px; cursor: pointer;
+  font-family: var(--fb); font-size: 13px; font-weight: 500; letter-spacing: 0.02em; white-space: nowrap;
+  background: transparent; color: var(--t2); transition: all 0.2s ease;
+}
+.tab-btn:hover { color: var(--t1); background: rgba(255,255,255,0.05); }
+.tab-btn.active { background: var(--goldbg); color: var(--gold); border: 1px solid var(--goldbord); }
+
+/* ── CARDS ── */
+.cards-row { display: grid; gap: 16px; margin-bottom: 28px; }
+.cards-row.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.cards-row.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.cards-row.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.stat-card {
+  background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius);
+  padding: 22px 20px; position: relative; overflow: hidden; transition: border-color 0.2s;
+}
+.stat-card:hover { border-color: var(--goldbord); }
+.stat-card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  opacity: 0; transition: opacity 0.3s;
+}
+.stat-card:hover::before { opacity: 0.5; }
+.stat-label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t2); margin-bottom: 10px; }
+.stat-value { font-family: var(--fd); font-size: 28px; font-weight: 600; color: var(--t1); line-height: 1; margin-bottom: 4px; }
+.stat-sub { font-size: 12px; color: var(--t2); }
+.stat-value.gold { color: var(--gold); }
+.stat-value.green { color: var(--success); }
+
+/* ── INVESTOR CARDS ── */
+.investor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.investor-card {
+  background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius);
+  padding: 22px; transition: all 0.2s;
+}
+.investor-card:hover { border-color: var(--goldbord); transform: translateY(-2px); box-shadow: 0 12px 32px rgba(0,0,0,0.4); }
+.inv-card-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.inv-avatar {
+  width: 44px; height: 44px; border-radius: 50%; background: var(--goldbg);
+  border: 1px solid var(--goldbord); display: flex; align-items: center; justify-content: center;
+  font-family: var(--fd); font-size: 18px; font-weight: 600; color: var(--gold); flex-shrink: 0;
+}
+.inv-name { font-family: var(--fd); font-size: 18px; font-weight: 600; color: var(--t1); }
+.inv-phone { font-size: 12px; color: var(--t2); margin-top: 2px; }
+.inv-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.inv-stat { background: var(--bg4); border-radius: var(--radius-sm); padding: 10px 12px; }
+.inv-stat-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); margin-bottom: 4px; }
+.inv-stat-value { font-size: 14px; font-weight: 600; color: var(--t1); }
+.inv-stat-value.gold { color: var(--gold); }
+.inv-stat-value.green { color: var(--success); }
+.inv-stat-value.red { color: var(--danger); }
+
+/* ── TABLE ── */
+.table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--bord); }
+table { width: 100%; border-collapse: collapse; min-width: 600px; }
+thead tr { background: var(--bg2); }
+th {
+  padding: 12px 16px; text-align: left; font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--t2); font-weight: 500; white-space: nowrap;
+  border-bottom: 1px solid var(--bord);
+}
+td { padding: 14px 16px; font-size: 14px; border-bottom: 1px solid var(--bord); vertical-align: middle; }
+tbody tr { transition: background 0.15s; }
+tbody tr:hover { background: rgba(255,255,255,0.025); }
+tbody tr:last-child td { border-bottom: none; }
+.td-name { font-weight: 500; color: var(--t1); }
+.td-gold { color: var(--gold); font-weight: 600; }
+.td-green { color: var(--success); }
+.td-red { color: var(--danger); }
+.td-muted { color: var(--t2); font-size: 13px; }
+.td-note { font-size: 12px; color: var(--t2); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── FORMS ── */
+.form-card {
+  background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius);
+  padding: 28px; max-width: 520px;
+}
+.form-title { font-family: var(--fd); font-size: 26px; font-weight: 600; margin-bottom: 6px; color: var(--t1); }
+.form-sub { font-size: 13px; color: var(--t2); margin-bottom: 28px; }
+.form-row { display: grid; gap: 16px; margin-bottom: 16px; }
+.form-row.cols-2 { grid-template-columns: 1fr 1fr; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--t2); font-weight: 500; }
+.field-input {
+  background: var(--bg2); border: 1px solid var(--bord); border-radius: var(--radius-sm);
+  padding: 11px 14px; font-size: 14px; color: var(--t1); font-family: var(--fb);
+  transition: border-color 0.2s, box-shadow 0.2s; outline: none; width: 100%;
+}
+.field-input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(201,168,76,0.12); }
+.field-input::placeholder { color: var(--t3); }
+.field-input-wrap { position: relative; }
+.field-input-wrap .field-input { padding-right: 42px; }
+.eye-btn {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; color: var(--t2); padding: 4px;
+  display: flex; align-items: center; transition: color 0.2s;
+}
+.eye-btn:hover { color: var(--gold); }
+select.field-input { cursor: pointer; }
+select.field-input option { background: #1a1a1a; color: var(--t1); }
+
+/* ── BUTTONS ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 11px 22px; border-radius: var(--radius-sm); font-family: var(--fb);
+  font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s;
+  border: none; letter-spacing: 0.02em; white-space: nowrap;
+}
+.btn-primary {
+  background: var(--gold); color: #0a0a0a; font-weight: 600;
+}
+.btn-primary:hover { background: var(--gold2); transform: translateY(-1px); box-shadow: 0 6px 20px rgba(201,168,76,0.35); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-ghost {
+  background: transparent; color: var(--t2); border: 1px solid var(--bord);
+}
+.btn-ghost:hover { color: var(--t1); border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.04); }
+.btn-danger { background: rgba(224,85,85,0.12); color: var(--danger); border: 1px solid rgba(224,85,85,0.25); }
+.btn-danger:hover { background: rgba(224,85,85,0.22); }
+.btn-sm { padding: 7px 14px; font-size: 12px; }
+.btn-icon { padding: 8px; border-radius: 8px; }
+.btn-full { width: 100%; }
+
+/* ── LOGIN PAGE ── */
+.login-card {
+  background: var(--bg3); border: 1px solid var(--goldbord); border-radius: 18px;
+  padding: 48px 42px; width: 100%; max-width: 420px; box-shadow: var(--shadow);
+  position: relative; overflow: hidden;
+}
+.login-card::before {
+  content: ''; position: absolute; top: -80px; right: -80px;
+  width: 200px; height: 200px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(201,168,76,0.12) 0%, transparent 70%);
+  pointer-events: none;
+}
+.login-logo { display: flex; flex-direction: column; align-items: center; margin-bottom: 36px; gap: 12px; }
+.login-title { font-family: var(--fd); font-size: 32px; font-weight: 600; color: var(--t1); text-align: center; line-height: 1.1; }
+.login-sub { font-size: 12px; color: var(--t2); letter-spacing: 0.14em; text-transform: uppercase; text-align: center; }
+.login-divider { width: 40px; height: 1px; background: var(--goldbord); margin: 0 auto 28px; }
+.login-error { background: rgba(224,85,85,0.1); border: 1px solid rgba(224,85,85,0.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: var(--danger); margin-bottom: 16px; text-align: center; }
+
+/* ── BADGES ── */
+.badge {
+  display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.badge-green { background: rgba(93,184,124,0.12); color: var(--success); border: 1px solid rgba(93,184,124,0.25); }
+.badge-red { background: rgba(224,85,85,0.12); color: var(--danger); border: 1px solid rgba(224,85,85,0.25); }
+.badge-gold { background: var(--goldbg); color: var(--gold); border: 1px solid var(--goldbord); }
+
+/* ── SECTION HEADER ── */
+.sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.sec-title { font-family: var(--fd); font-size: 26px; font-weight: 600; color: var(--t1); }
+.sec-sub { font-size: 13px; color: var(--t2); margin-top: 2px; }
+
+/* ── INLINE EDIT ── */
+.inline-edit { display: flex; align-items: center; gap: 8px; }
+.inline-input {
+  background: var(--bg2); border: 1px solid var(--goldbord); border-radius: 6px;
+  padding: 6px 10px; font-size: 14px; color: var(--t1); font-family: var(--fb);
+  outline: none; width: 130px;
+}
+.inline-input:focus { box-shadow: 0 0 0 2px rgba(201,168,76,0.2); }
+
+/* ── FILTER BAR ── */
+.filter-bar { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+.filter-select {
+  background: var(--bg2); border: 1px solid var(--bord); border-radius: var(--radius-sm);
+  padding: 8px 14px; font-size: 13px; color: var(--t1); font-family: var(--fb);
+  outline: none; cursor: pointer; transition: border-color 0.2s;
+}
+.filter-select:focus { border-color: var(--gold); }
+.filter-label { font-size: 12px; color: var(--t2); letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* ── PORTFOLIO BAR ── */
+.portfolio-bar-wrap { background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius); padding: 22px; margin-bottom: 20px; }
+.portfolio-bar-labels { display: flex; justify-content: space-between; margin-bottom: 10px; }
+.portfolio-bar-label { font-size: 12px; color: var(--t2); }
+.portfolio-bar-value { font-weight: 600; color: var(--t1); }
+.portfolio-bar-track { background: var(--bg2); border-radius: 6px; height: 10px; overflow: hidden; margin-bottom: 12px; }
+.portfolio-bar-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--gold3), var(--gold), var(--gold2)); transition: width 0.8s ease; }
+.portfolio-bar-foot { display: flex; justify-content: space-between; }
+.pbar-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--t2); }
+.pbar-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+/* ── CHART AREA ── */
+.chart-card { background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius); padding: 24px; margin-bottom: 20px; }
+.chart-title { font-family: var(--fd); font-size: 20px; font-weight: 600; color: var(--t1); margin-bottom: 18px; }
+.custom-tooltip { background: var(--bg4); border: 1px solid var(--goldbord); border-radius: 8px; padding: 10px 14px; font-size: 13px; }
+.custom-tooltip .ct-label { color: var(--t2); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px; }
+.custom-tooltip .ct-value { color: var(--gold); font-weight: 600; }
+
+/* ── SETTINGS ── */
+.settings-section { background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius); padding: 24px; margin-bottom: 20px; }
+.settings-title { font-size: 14px; font-weight: 600; color: var(--t2); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }
+.settings-title::after { content: ''; flex: 1; height: 1px; background: var(--bord); }
+
+/* ── LIVE INDICATOR ── */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px var(--success); animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.live-badge { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--t2); letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* ── EMPTY STATE ── */
+.empty-state { padding: 60px 20px; text-align: center; color: var(--t2); }
+.empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.4; }
+.empty-text { font-size: 15px; color: var(--t2); }
+
+/* ── TOAST ── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+  background: var(--bg4); border: 1px solid var(--goldbord); border-radius: 10px;
+  padding: 14px 20px; font-size: 14px; color: var(--t1); box-shadow: var(--shadow);
+  animation: slideUp 0.3s ease; max-width: 320px;
+}
+.toast.success { border-color: rgba(93,184,124,0.4); }
+.toast.error { border-color: rgba(224,85,85,0.4); color: var(--danger); }
+@keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ── LOADING ── */
+.loader-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 80px; color: var(--t2); font-size: 14px; }
+.spinner { width: 32px; height: 32px; border: 2px solid var(--bord); border-top-color: var(--gold); border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── DIVIDER ── */
+.divider { height: 1px; background: var(--bord); margin: 24px 0; }
+
+/* ── SCROLLABLE TABLE ── */
+.table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+
+/* ── OVERVIEW BREAKDOWNS ── */
+.breakdown-list { display: flex; flex-direction: column; gap: 12px; }
+.breakdown-item { background: var(--bg3); border: 1px solid var(--bord); border-radius: var(--radius-sm); padding: 16px; }
+.breakdown-item-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.breakdown-desc { font-size: 14px; font-weight: 500; color: var(--t1); }
+.breakdown-date { font-size: 12px; color: var(--t2); }
+.breakdown-bar-track { background: var(--bg2); border-radius: 4px; height: 6px; overflow: hidden; margin-bottom: 8px; }
+.breakdown-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--gold3), var(--gold)); }
+.breakdown-nums { display: flex; justify-content: space-between; font-size: 13px; color: var(--t2); }
+
+/* ── RESPONSIVE ── */
+@media (max-width: 900px) {
+  .cards-row.cols-4 { grid-template-columns: repeat(2, 1fr); }
+  .main-content { padding: 20px 16px 48px; }
+  .topbar { padding: 0 16px; }
+}
+@media (max-width: 600px) {
+  .cards-row.cols-4, .cards-row.cols-3 { grid-template-columns: 1fr 1fr; }
+  .cards-row.cols-2 { grid-template-columns: 1fr 1fr; }
+  .login-card { padding: 36px 24px; }
+  .form-card { padding: 22px; }
+  .form-row.cols-2 { grid-template-columns: 1fr; }
+  .topbar-brand-name { font-size: 18px; }
+  .stat-value { font-size: 22px; }
+  .sec-title { font-size: 22px; }
+  .tabs { gap: 1px; padding: 3px; }
+  .tab-btn { padding: 8px 12px; font-size: 12px; }
+  .toast { left: 16px; right: 16px; bottom: 16px; }
+}
+@media (max-width: 420px) {
+  .cards-row.cols-4 { grid-template-columns: 1fr 1fr; }
+  .inv-stats { grid-template-columns: 1fr 1fr; }
+}
+`;
+
+// ─── HELPERS ────────────────────────────────────────────────────────────────
+const injectStyles = () => {
+  if (document.getElementById('eq-styles')) return;
+  const el = document.createElement('style');
+  el.id = 'eq-styles';
+  el.textContent = CSS;
+  document.head.appendChild(el);
+};
+
+const fmt = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const fmtPct = (n) => (n >= 0 ? '+' : '') + Number(n || 0).toFixed(2) + '%';
+const fmtDate = (d) => {
+  if (!d) return '—';
+  try { return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+  catch { return d; }
+};
+const pct = (invested, current) => invested ? ((current - invested) / invested) * 100 : 0;
+const initials = (name) => name ? name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : '?';
+const genId = () => Math.random().toString(36).substr(2, 9);
+
+// ─── TOAST ──────────────────────────────────────────────────────────────────
+function Toast({ msg, type, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 3000); return () => clearTimeout(t); }, [onDone]);
+  return <div className={`toast ${type}`}>{msg}</div>;
+}
+function useToast() {
+  const [toast, setToast] = useState(null);
+  const show = useCallback((msg, type = 'success') => setToast({ msg, type, id: Date.now() }), []);
+  const el = toast ? <Toast key={toast.id} msg={toast.msg} type={toast.type} onDone={() => setToast(null)} /> : null;
+  return [show, el];
+}
+
+// ─── SHIELD SVG LOGO ─────────────────────────────────────────────────────────
+function ShieldLogo({ size = 48 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M32 4L6 14V34C6 50.2 17.3 63.6 32 68C46.7 63.6 58 50.2 58 34V14L32 4Z"
+        fill="url(#shieldGrad)" stroke="rgba(201,168,76,0.5)" strokeWidth="1" />
+      <path d="M32 12L12 20V34C12 47 21.2 57.8 32 62C42.8 57.8 52 47 52 34V20L32 12Z"
+        fill="rgba(10,10,10,0.6)" />
+      <text x="32" y="42" textAnchor="middle" fontSize="22" fontWeight="bold"
+        fill="url(#textGrad)" fontFamily="Cormorant Garamond, serif" letterSpacing="1">E</text>
+      <defs>
+        <linearGradient id="shieldGrad" x1="32" y1="4" x2="32" y2="68" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#e8c87a" />
+          <stop offset="100%" stopColor="#8a6820" />
+        </linearGradient>
+        <linearGradient id="textGrad" x1="32" y1="22" x2="32" y2="48" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#f5f5f0" />
+          <stop offset="100%" stopColor="#c9a84c" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
+
+// ─── SEED DATA ────────────────────────────────────────────────────────────────
+async function seedIfEmpty() {
+  const adminRef = doc(db, 'admin', 'config');
+  const adminSnap = await getDoc(adminRef);
+  if (adminSnap.exists()) return;
+
+  // Admin
+  await setDoc(adminRef, { phone: '9999999999', password: 'admin123' });
+
+  // Investors
+  const inv1Id = 'investor_rajesh';
+  const inv2Id = 'investor_priya';
+  const inv3Id = 'investor_anil';
+
+  await setDoc(doc(db, 'investors', inv1Id), {
+    name: 'Rajesh Sharma', phone: '9876543210', password: 'rajesh123',
+    email: 'rajesh.sharma@example.com', joinDate: '2023-01-15',
+  });
+  await setDoc(doc(db, 'investors', inv2Id), {
+    name: 'Priya Mehta', phone: '9123456789', password: 'priya123',
+    email: 'priya.mehta@example.com', joinDate: '2023-03-20',
+  });
+  await setDoc(doc(db, 'investors', inv3Id), {
+    name: 'Anil Kumar', phone: '9988776655', password: 'anil123',
+    email: 'anil.kumar@example.com', joinDate: '2023-06-10',
+  });
+
+  // Investments for Rajesh
+  await setDoc(doc(db, 'investments', genId() + '_r1'), { investorId: inv1Id, date: '2023-01-20', amount: 2500000, currentValue: 3120000, note: 'Private Equity Fund A — Series B' });
+  await setDoc(doc(db, 'investments', genId() + '_r2'), { investorId: inv1Id, date: '2023-07-10', amount: 1800000, currentValue: 2050000, note: 'Real Estate Debt Instrument' });
+  await setDoc(doc(db, 'investments', genId() + '_r3'), { investorId: inv1Id, date: '2024-02-01', amount: 1200000, currentValue: 1380000, note: 'Structured Credit Portfolio' });
+
+  // Investments for Priya
+  await setDoc(doc(db, 'investments', genId() + '_p1'), { investorId: inv2Id, date: '2023-04-05', amount: 3000000, currentValue: 3850000, note: 'Growth Equity — FinTech Basket' });
+  await setDoc(doc(db, 'investments', genId() + '_p2'), { investorId: inv2Id, date: '2023-10-15', amount: 1500000, currentValue: 1620000, note: 'Fixed Income — Corporate Bonds' });
+
+  // Investments for Anil
+  await setDoc(doc(db, 'investments', genId() + '_a1'), { investorId: inv3Id, date: '2023-07-01', amount: 5000000, currentValue: 6200000, note: 'Diversified Equity Portfolio' });
+  await setDoc(doc(db, 'investments', genId() + '_a2'), { investorId: inv3Id, date: '2024-01-10', amount: 2000000, currentValue: 2280000, note: 'Infrastructure Fund — Tranche II' });
+}
+
+// ─── LOGIN PAGE ──────────────────────────────────────────────────────────────
+function LoginPage({ onLogin }) {
+  const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!phone || !password) { setError('Please enter phone and password.'); return; }
+    setLoading(true); setError('');
+    try {
+      // Check admin
+      const adminSnap = await getDoc(doc(db, 'admin', 'config'));
+      if (adminSnap.exists()) {
+        const a = adminSnap.data();
+        if (a.phone === phone && a.password === password) {
+          onLogin({ type: 'admin' }); return;
+        }
+      }
+      // Check investors
+      const q = query(collection(db, 'investors'), where('phone', '==', phone));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const invDoc = snap.docs[0];
+        const inv = invDoc.data();
+        if (inv.password === password) {
+          onLogin({ type: 'investor', id: invDoc.id, ...inv }); return;
+        }
+      }
+      setError('Invalid phone number or password.');
+    } catch (err) {
+      setError('Connection error. Check your Firebase config.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="page-center" style={{ background: 'var(--bg)' }}>
+      <div className="login-card">
+        <div className="login-logo">
+          <ShieldLogo size={56} />
+          <div>
+            <div className="login-title">Equishield</div>
+            <div className="login-sub">Investment Group</div>
+          </div>
+        </div>
+        <div className="login-divider" />
+        {error && <div className="login-error">{error}</div>}
+        <form onSubmit={handleSubmit}>
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">Phone Number</label>
+              <input className="field-input" type="tel" placeholder="10-digit phone number"
+                value={phone} onChange={e => setPhone(e.target.value.replace(/\D/g,'').slice(0,10))} />
+            </div>
+            <div className="field">
+              <label className="field-label">Password</label>
+              <div className="field-input-wrap">
+                <input className="field-input" type={showPw ? 'text' : 'password'} placeholder="Enter password"
+                  value={password} onChange={e => setPassword(e.target.value)} />
+                <button type="button" className="eye-btn" onClick={() => setShowPw(v => !v)}>
+                  {showPw ? <EyeOff /> : <EyeOn />}
+                </button>
+              </div>
+            </div>
+          </div>
+          <button className="btn btn-primary btn-full" type="submit" disabled={loading}
+            style={{ marginTop: 8, height: 48, fontSize: 15 }}>
+            {loading ? 'Authenticating…' : 'Sign In'}
+          </button>
+        </form>
+        <div style={{ marginTop: 28, textAlign: 'center', fontSize: 11, color: 'var(--t3)', letterSpacing: '0.08em' }}>
+          SECURED BY EQUISHIELD ENTERPRISE SECURITY
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── EYE ICONS ───────────────────────────────────────────────────────────────
+const EyeOn = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+  </svg>
+);
+const EyeOff = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>
+);
+const TrashIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+  </svg>
+);
+const EditIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+  </svg>
+);
+const CheckIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>
+);
+const XIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+  </svg>
+);
+
+// ─── CUSTOM CHART TOOLTIP ────────────────────────────────────────────────────
+const ChartTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="custom-tooltip">
+      <div className="ct-label">{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color || 'var(--gold)', fontWeight: 600, fontSize: 14 }}>
+          {p.name}: {fmt(p.value)}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── ADMIN PANEL ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+function AdminPanel({ adminUser, onLogout }) {
+  const [tab, setTab] = useState('investors');
+  const [investors, setInvestors] = useState([]);
+  const [investments, setInvestments] = useState([]);
+  const [showToast, toastEl] = useToast();
+
+  // Real-time listeners
+  useEffect(() => {
+    const unsub1 = onSnapshot(collection(db, 'investors'), snap => {
+      setInvestors(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    const unsub2 = onSnapshot(collection(db, 'investments'), snap => {
+      setInvestments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsub1(); unsub2(); };
+  }, []);
+
+  // Summary stats
+  const totalAUM = investments.reduce((s, i) => s + Number(i.currentValue || 0), 0);
+  const totalInvested = investments.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const totalReturns = totalAUM - totalInvested;
+
+  const tabs = [
+    { id: 'investors', label: 'Investors' },
+    { id: 'investments', label: 'Investments' },
+    { id: 'add-investor', label: 'Add Investor' },
+    { id: 'add-investment', label: 'Add Investment' },
+    { id: 'settings', label: 'Settings' },
+  ];
+
+  return (
+    <div className="shell">
+      {toastEl}
+      <div className="topbar">
+        <div className="topbar-brand">
+          <ShieldLogo size={32} />
+          <div>
+            <div className="topbar-brand-name">Equishield</div>
+            <div className="topbar-brand-tag">Admin Panel</div>
+          </div>
+        </div>
+        <div className="topbar-right">
+          <div className="live-badge"><div className="live-dot" /> Live</div>
+          <button className="btn btn-ghost btn-sm" onClick={onLogout}>Sign Out</button>
+        </div>
+      </div>
+      <div className="main-content">
+        {/* Summary Cards */}
+        <div className="cards-row cols-4">
+          <div className="stat-card">
+            <div className="stat-label">Total AUM</div>
+            <div className="stat-value gold">{fmt(totalAUM)}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Total Invested</div>
+            <div className="stat-value">{fmt(totalInvested)}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Total Returns</div>
+            <div className={`stat-value ${totalReturns >= 0 ? 'green' : ''}`}>{fmt(totalReturns)}</div>
+            <div className="stat-sub">{fmtPct(pct(totalInvested, totalAUM))}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Active Investors</div>
+            <div className="stat-value gold">{investors.length}</div>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="tabs">
+          {tabs.map(t => (
+            <button key={t.id} className={`tab-btn ${tab === t.id ? 'active' : ''}`}
+              onClick={() => setTab(t.id)}>{t.label}</button>
+          ))}
+        </div>
+
+        {tab === 'investors' && <AdminInvestorsTab investors={investors} investments={investments} />}
+        {tab === 'investments' && <AdminInvestmentsTab investors={investors} investments={investments} showToast={showToast} />}
+        {tab === 'add-investor' && <AddInvestorTab onDone={() => setTab('investors')} showToast={showToast} />}
+        {tab === 'add-investment' && <AddInvestmentTab investors={investors} onDone={() => setTab('investments')} showToast={showToast} />}
+        {tab === 'settings' && <SettingsTab investors={investors} showToast={showToast} />}
+      </div>
+    </div>
+  );
+}
+
+// ─── ADMIN: INVESTORS TAB ─────────────────────────────────────────────────────
+function AdminInvestorsTab({ investors, investments }) {
+  const invMap = {};
+  investors.forEach(i => {
+    const invs = investments.filter(x => x.investorId === i.id);
+    invMap[i.id] = {
+      invested: invs.reduce((s, x) => s + Number(x.amount || 0), 0),
+      current: invs.reduce((s, x) => s + Number(x.currentValue || 0), 0),
+      count: invs.length,
+    };
+  });
+
+  return (
+    <div>
+      <div className="sec-head">
+        <div>
+          <div className="sec-title">Investors</div>
+          <div className="sec-sub">{investors.length} active accounts</div>
+        </div>
+      </div>
+      {investors.length === 0 ? (
+        <div className="empty-state"><div className="empty-icon">👤</div><div className="empty-text">No investors yet</div></div>
+      ) : (
+        <div className="investor-grid">
+          {investors.map(inv => {
+            const stats = invMap[inv.id] || { invested: 0, current: 0, count: 0 };
+            const ret = stats.current - stats.invested;
+            const retPct = pct(stats.invested, stats.current);
+            return (
+              <div key={inv.id} className="investor-card">
+                <div className="inv-card-head">
+                  <div className="inv-avatar">{initials(inv.name)}</div>
+                  <div>
+                    <div className="inv-name">{inv.name}</div>
+                    <div className="inv-phone">{inv.phone} · {stats.count} investment{stats.count !== 1 ? 's' : ''}</div>
+                  </div>
+                </div>
+                <div className="inv-stats">
+                  <div className="inv-stat">
+                    <div className="inv-stat-label">Invested</div>
+                    <div className="inv-stat-value">{fmt(stats.invested)}</div>
+                  </div>
+                  <div className="inv-stat">
+                    <div className="inv-stat-label">Current</div>
+                    <div className="inv-stat-value gold">{fmt(stats.current)}</div>
+                  </div>
+                  <div className="inv-stat">
+                    <div className="inv-stat-label">Returns</div>
+                    <div className={`inv-stat-value ${ret >= 0 ? 'green' : 'red'}`}>{fmt(ret)}</div>
+                  </div>
+                  <div className="inv-stat">
+                    <div className="inv-stat-label">Return %</div>
+                    <div className={`inv-stat-value ${retPct >= 0 ? 'green' : 'red'}`}>{fmtPct(retPct)}</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ADMIN: INVESTMENTS TAB ───────────────────────────────────────────────────
+function AdminInvestmentsTab({ investors, investments, showToast }) {
+  const [filter, setFilter] = useState('all');
+  const [editId, setEditId] = useState(null);
+  const [editVal, setEditVal] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const filtered = filter === 'all' ? investments : investments.filter(x => x.investorId === filter);
+  const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const investorMap = Object.fromEntries(investors.map(i => [i.id, i.name]));
+
+  const startEdit = (inv) => { setEditId(inv.id); setEditVal(String(inv.currentValue)); };
+  const cancelEdit = () => { setEditId(null); setEditVal(''); };
+
+  const saveEdit = async (id) => {
+    const val = parseFloat(editVal.replace(/,/g, ''));
+    if (isNaN(val) || val < 0) { showToast('Enter a valid amount', 'error'); return; }
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'investments', id), { currentValue: val });
+      showToast('Current value updated ✓');
+      cancelEdit();
+    } catch { showToast('Failed to update', 'error'); }
+    finally { setSaving(false); }
+  };
+
+  const deleteInv = async (id) => {
+    if (!window.confirm('Delete this investment?')) return;
+    try {
+      await deleteDoc(doc(db, 'investments', id));
+      showToast('Investment deleted');
+    } catch { showToast('Delete failed', 'error'); }
+  };
+
+  return (
+    <div>
+      <div className="table-toolbar">
+        <div>
+          <div className="sec-title">Investments</div>
+          <div className="sec-sub">{filtered.length} records</div>
+        </div>
+        <div className="filter-bar" style={{ marginBottom: 0 }}>
+          <span className="filter-label">Filter:</span>
+          <select className="filter-select" value={filter} onChange={e => setFilter(e.target.value)}>
+            <option value="all">All Investors</option>
+            {investors.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+          </select>
+        </div>
+      </div>
+      {sorted.length === 0 ? (
+        <div className="empty-state"><div className="empty-icon">📊</div><div className="empty-text">No investments found</div></div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Investor</th><th>Date</th><th>Note / Description</th>
+                <th>Amount Invested</th><th>Current Value</th><th>Return</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map(inv => {
+                const ret = Number(inv.currentValue || 0) - Number(inv.amount || 0);
+                const retPct = pct(inv.amount, inv.currentValue);
+                const isEditing = editId === inv.id;
+                return (
+                  <tr key={inv.id}>
+                    <td className="td-name">{investorMap[inv.investorId] || '—'}</td>
+                    <td className="td-muted">{fmtDate(inv.date)}</td>
+                    <td><span className="td-note">{inv.note || '—'}</span></td>
+                    <td>{fmt(inv.amount)}</td>
+                    <td>
+                      {isEditing ? (
+                        <div className="inline-edit">
+                          <input className="inline-input" value={editVal}
+                            onChange={e => setEditVal(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveEdit(inv.id); if (e.key === 'Escape') cancelEdit(); }}
+                            autoFocus />
+                          <button className="btn btn-sm" style={{ background: 'var(--goldbg)', color: 'var(--gold)', border: '1px solid var(--goldbord)', padding: '6px 8px' }}
+                            onClick={() => saveEdit(inv.id)} disabled={saving}><CheckIcon /></button>
+                          <button className="btn btn-ghost btn-sm btn-icon" onClick={cancelEdit}><XIcon /></button>
+                        </div>
+                      ) : (
+                        <span className="td-gold">{fmt(inv.currentValue)}</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={ret >= 0 ? 'td-green' : 'td-red'}>
+                        {fmt(ret)} <span style={{ fontSize: 12, marginLeft: 4 }}>({fmtPct(retPct)})</span>
+                      </span>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {!isEditing && (
+                          <button className="btn btn-ghost btn-sm btn-icon" title="Edit current value" onClick={() => startEdit(inv)}>
+                            <EditIcon />
+                          </button>
+                        )}
+                        <button className="btn btn-danger btn-sm btn-icon" title="Delete" onClick={() => deleteInv(inv.id)}>
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ADMIN: ADD INVESTOR ──────────────────────────────────────────────────────
+function AddInvestorTab({ onDone, showToast }) {
+  const [form, setForm] = useState({ name: '', phone: '', password: '', email: '' });
+  const [loading, setLoading] = useState(false);
+  const [showPw, setShowPw] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.name || !form.phone || !form.password) { showToast('Fill all required fields', 'error'); return; }
+    if (form.phone.length !== 10) { showToast('Phone must be 10 digits', 'error'); return; }
+    setLoading(true);
+    try {
+      // Check duplicate phone
+      const q = query(collection(db, 'investors'), where('phone', '==', form.phone));
+      const snap = await getDocs(q);
+      if (!snap.empty) { showToast('Phone number already exists', 'error'); setLoading(false); return; }
+      await addDoc(collection(db, 'investors'), { ...form, joinDate: new Date().toISOString().split('T')[0] });
+      showToast(`${form.name} added successfully ✓`);
+      setForm({ name: '', phone: '', password: '', email: '' });
+      setTimeout(onDone, 800);
+    } catch { showToast('Failed to add investor', 'error'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <div className="sec-head">
+        <div><div className="sec-title">Add Investor</div><div className="sec-sub">Create a new investor account</div></div>
+      </div>
+      <form className="form-card" onSubmit={submit}>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Full Name *</label>
+            <input className="field-input" placeholder="e.g. Vikram Nair" value={form.name} onChange={set('name')} />
+          </div>
+        </div>
+        <div className="form-row cols-2">
+          <div className="field">
+            <label className="field-label">Phone Number *</label>
+            <input className="field-input" type="tel" placeholder="10-digit number"
+              value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value.replace(/\D/g,'').slice(0,10) }))} />
+          </div>
+          <div className="field">
+            <label className="field-label">Password *</label>
+            <div className="field-input-wrap">
+              <input className="field-input" type={showPw ? 'text' : 'password'} placeholder="Set password"
+                value={form.password} onChange={set('password')} />
+              <button type="button" className="eye-btn" onClick={() => setShowPw(v => !v)}>{showPw ? <EyeOff /> : <EyeOn />}</button>
+            </div>
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Email Address</label>
+            <input className="field-input" type="email" placeholder="investor@example.com" value={form.email} onChange={set('email')} />
+          </div>
+        </div>
+        <button className="btn btn-primary" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+          {loading ? 'Adding…' : 'Add Investor'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ─── ADMIN: ADD INVESTMENT ────────────────────────────────────────────────────
+function AddInvestmentTab({ investors, onDone, showToast }) {
+  const [form, setForm] = useState({ investorId: '', date: new Date().toISOString().split('T')[0], amount: '', currentValue: '', note: '' });
+  const [loading, setLoading] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.investorId || !form.date || !form.amount) { showToast('Fill all required fields', 'error'); return; }
+    const amt = parseFloat(form.amount.replace(/,/g,''));
+    const cur = parseFloat((form.currentValue || form.amount).replace(/,/g,''));
+    if (isNaN(amt) || amt <= 0) { showToast('Enter a valid amount', 'error'); return; }
+    setLoading(true);
+    try {
+      await addDoc(collection(db, 'investments'), { investorId: form.investorId, date: form.date, amount: amt, currentValue: isNaN(cur) ? amt : cur, note: form.note });
+      showToast('Investment added ✓');
+      setForm({ investorId: '', date: new Date().toISOString().split('T')[0], amount: '', currentValue: '', note: '' });
+      setTimeout(onDone, 800);
+    } catch { showToast('Failed to add investment', 'error'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <div className="sec-head">
+        <div><div className="sec-title">Add Investment</div><div className="sec-sub">Record a new investment entry</div></div>
+      </div>
+      <form className="form-card" onSubmit={submit}>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Investor *</label>
+            <select className="field-input" value={form.investorId} onChange={set('investorId')}>
+              <option value="">Select investor…</option>
+              {investors.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="form-row cols-2">
+          <div className="field">
+            <label className="field-label">Date *</label>
+            <input className="field-input" type="date" value={form.date} onChange={set('date')} />
+          </div>
+          <div className="field">
+            <label className="field-label">Amount Invested (₹) *</label>
+            <input className="field-input" type="number" placeholder="e.g. 2500000" value={form.amount} onChange={set('amount')} min="0" />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Current Value (₹)</label>
+            <input className="field-input" type="number" placeholder="Defaults to amount invested" value={form.currentValue} onChange={set('currentValue')} min="0" />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label className="field-label">Description / Note</label>
+            <input className="field-input" placeholder="e.g. Private Equity Fund A" value={form.note} onChange={set('note')} />
+          </div>
+        </div>
+        <button className="btn btn-primary" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+          {loading ? 'Adding…' : 'Add Investment'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ─── ADMIN: SETTINGS TAB ─────────────────────────────────────────────────────
+function SettingsTab({ investors, showToast }) {
+  const [adminPhone, setAdminPhone] = useState('');
+  const [adminPw, setAdminPw] = useState('');
+  const [showAdminPw, setShowAdminPw] = useState(false);
+  const [savingAdmin, setSavingAdmin] = useState(false);
+
+  const [selInv, setSelInv] = useState('');
+  const [invPhone, setInvPhone] = useState('');
+  const [invPw, setInvPw] = useState('');
+  const [showInvPw, setShowInvPw] = useState(false);
+  const [savingInv, setSavingInv] = useState(false);
+
+  const saveAdmin = async (e) => {
+    e.preventDefault();
+    if (!adminPhone && !adminPw) { showToast('Enter at least one field', 'error'); return; }
+    setSavingAdmin(true);
+    try {
+      const updates = {};
+      if (adminPhone) updates.phone = adminPhone;
+      if (adminPw) updates.password = adminPw;
+      await updateDoc(doc(db, 'admin', 'config'), updates);
+      showToast('Admin credentials updated ✓');
+      setAdminPhone(''); setAdminPw('');
+    } catch { showToast('Update failed', 'error'); }
+    finally { setSavingAdmin(false); }
+  };
+
+  const saveInvestor = async (e) => {
+    e.preventDefault();
+    if (!selInv) { showToast('Select an investor', 'error'); return; }
+    if (!invPhone && !invPw) { showToast('Enter at least one field', 'error'); return; }
+    setSavingInv(true);
+    try {
+      const updates = {};
+      if (invPhone) {
+        if (invPhone.length !== 10) { showToast('Phone must be 10 digits', 'error'); setSavingInv(false); return; }
+        updates.phone = invPhone;
+      }
+      if (invPw) updates.password = invPw;
+      await updateDoc(doc(db, 'investors', selInv), updates);
+      showToast('Investor credentials updated ✓');
+      setInvPhone(''); setInvPw(''); setSelInv('');
+    } catch { showToast('Update failed', 'error'); }
+    finally { setSavingInv(false); }
+  };
+
+  return (
+    <div>
+      <div className="sec-head">
+        <div><div className="sec-title">Settings</div><div className="sec-sub">Manage credentials</div></div>
+      </div>
+      <div style={{ display: 'grid', gap: 20, gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))' }}>
+        {/* Admin credentials */}
+        <form className="form-card" onSubmit={saveAdmin}>
+          <div className="settings-title">Admin Credentials</div>
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">New Phone Number</label>
+              <input className="field-input" type="tel" placeholder="10-digit number"
+                value={adminPhone} onChange={e => setAdminPhone(e.target.value.replace(/\D/g,'').slice(0,10))} />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">New Password</label>
+              <div className="field-input-wrap">
+                <input className="field-input" type={showAdminPw ? 'text' : 'password'} placeholder="New password"
+                  value={adminPw} onChange={e => setAdminPw(e.target.value)} />
+                <button type="button" className="eye-btn" onClick={() => setShowAdminPw(v => !v)}>{showAdminPw ? <EyeOff /> : <EyeOn />}</button>
+              </div>
+            </div>
+          </div>
+          <button className="btn btn-primary" type="submit" disabled={savingAdmin}>{savingAdmin ? 'Saving…' : 'Update Admin'}</button>
+        </form>
+
+        {/* Investor credentials */}
+        <form className="form-card" onSubmit={saveInvestor}>
+          <div className="settings-title">Investor Credentials</div>
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">Select Investor</label>
+              <select className="field-input" value={selInv} onChange={e => setSelInv(e.target.value)}>
+                <option value="">Choose investor…</option>
+                {investors.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">New Phone Number</label>
+              <input className="field-input" type="tel" placeholder="10-digit number"
+                value={invPhone} onChange={e => setInvPhone(e.target.value.replace(/\D/g,'').slice(0,10))} />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">New Password</label>
+              <div className="field-input-wrap">
+                <input className="field-input" type={showInvPw ? 'text' : 'password'} placeholder="New password"
+                  value={invPw} onChange={e => setInvPw(e.target.value)} />
+                <button type="button" className="eye-btn" onClick={() => setShowInvPw(v => !v)}>{showInvPw ? <EyeOff /> : <EyeOn />}</button>
+              </div>
+            </div>
+          </div>
+          <button className="btn btn-primary" type="submit" disabled={savingInv}>{savingInv ? 'Saving…' : 'Update Investor'}</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── INVESTOR PORTAL ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+function InvestorPortal({ investor, onLogout }) {
+  const [tab, setTab] = useState('overview');
+  const [investments, setInvestments] = useState([]);
+  const [profile, setProfile] = useState(investor);
+  const [loading, setLoading] = useState(true);
+
+  // Real-time listener — investor's own investments only
+  useEffect(() => {
+    const q = query(collection(db, 'investments'), where('investorId', '==', investor.id));
+    const unsub1 = onSnapshot(q, snap => {
+      setInvestments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    });
+    const unsub2 = onSnapshot(doc(db, 'investors', investor.id), snap => {
+      if (snap.exists()) setProfile(p => ({ ...p, ...snap.data() }));
+    });
+    return () => { unsub1(); unsub2(); };
+  }, [investor.id]);
+
+  const sorted = [...investments].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const totalInvested = investments.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const currentValue = investments.reduce((s, i) => s + Number(i.currentValue || 0), 0);
+  const totalReturns = currentValue - totalInvested;
+  const returnPct = pct(totalInvested, currentValue);
+
+  const tabs = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'transactions', label: 'Transactions' },
+    { id: 'chart', label: 'Charts' },
+  ];
+
+  return (
+    <div className="shell">
+      <div className="topbar">
+        <div className="topbar-brand">
+          <ShieldLogo size={32} />
+          <div>
+            <div className="topbar-brand-name">Equishield</div>
+            <div className="topbar-brand-tag">Investor Portal</div>
+          </div>
+        </div>
+        <div className="topbar-right">
+          <div className="live-badge"><div className="live-dot" /> Live</div>
+          <div className="topbar-user" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'var(--goldbg)', border: '1px solid var(--goldbord)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'var(--gold)', fontFamily: 'var(--fd)' }}>
+              {initials(profile.name)}
+            </div>
+            <span style={{ display: 'none' }}>{profile.name}</span>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onLogout}>Sign Out</button>
+        </div>
+      </div>
+
+      <div className="main-content">
+        {/* Welcome */}
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontFamily: 'var(--fd)', fontSize: 30, fontWeight: 600, color: 'var(--t1)' }}>
+            Welcome back, <span style={{ color: 'var(--gold)' }}>{profile.name.split(' ')[0]}</span>
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--t2)', marginTop: 4 }}>
+            Your portfolio snapshot · Updates in real-time
+          </div>
+        </div>
+
+        {/* Summary Cards */}
+        <div className="cards-row cols-4">
+          <div className="stat-card">
+            <div className="stat-label">Total Invested</div>
+            <div className="stat-value">{fmt(totalInvested)}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Current Value</div>
+            <div className="stat-value gold">{fmt(currentValue)}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Total Returns</div>
+            <div className={`stat-value ${totalReturns >= 0 ? 'green' : ''}`}>{fmt(totalReturns)}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Return %</div>
+            <div className={`stat-value ${returnPct >= 0 ? 'green' : ''}`}>{fmtPct(returnPct)}</div>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="tabs">
+          {tabs.map(t => (
+            <button key={t.id} className={`tab-btn ${tab === t.id ? 'active' : ''}`}
+              onClick={() => setTab(t.id)}>{t.label}</button>
+          ))}
+        </div>
+
+        {loading ? (
+          <div className="loader-wrap"><div className="spinner" /><span>Loading your portfolio…</span></div>
+        ) : (
+          <>
+            {tab === 'overview' && <InvestorOverview investments={sorted} totalInvested={totalInvested} currentValue={currentValue} />}
+            {tab === 'transactions' && <InvestorTransactions investments={sorted} />}
+            {tab === 'chart' && <InvestorCharts investments={sorted} />}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── INVESTOR: OVERVIEW TAB ───────────────────────────────────────────────────
+function InvestorOverview({ investments, totalInvested, currentValue }) {
+  if (investments.length === 0) {
+    return <div className="empty-state"><div className="empty-icon">📈</div><div className="empty-text">No investments recorded yet</div></div>;
+  }
+  const barWidth = totalInvested > 0 ? Math.min(100, (currentValue / totalInvested) * 80) : 0;
+  return (
+    <div>
+      {/* Portfolio performance bar */}
+      <div className="portfolio-bar-wrap">
+        <div className="portfolio-bar-labels">
+          <div><div className="portfolio-bar-label">Invested</div><div className="portfolio-bar-value">{fmt(totalInvested)}</div></div>
+          <div style={{ textAlign: 'right' }}><div className="portfolio-bar-label">Current Value</div><div className="portfolio-bar-value" style={{ color: 'var(--gold)' }}>{fmt(currentValue)}</div></div>
+        </div>
+        <div className="portfolio-bar-track">
+          <div className="portfolio-bar-fill" style={{ width: `${barWidth}%` }} />
+        </div>
+        <div className="portfolio-bar-foot">
+          <div className="pbar-item"><div className="pbar-dot" style={{ background: 'var(--gold3)' }} />Invested</div>
+          <div className="pbar-item"><div className="pbar-dot" style={{ background: 'var(--gold)' }} />Current Value</div>
+          <div className="pbar-item"><div className="pbar-dot" style={{ background: 'var(--success)' }} />
+            Gain: {fmt(currentValue - totalInvested)} ({fmtPct(pct(totalInvested, currentValue))})
+          </div>
+        </div>
+      </div>
+
+      {/* Per-investment breakdown */}
+      <div className="sec-head" style={{ marginBottom: 14 }}>
+        <div><div className="sec-title" style={{ fontSize: 20 }}>Investment Breakdown</div></div>
+      </div>
+      <div className="breakdown-list">
+        {investments.map(inv => {
+          const ret = Number(inv.currentValue || 0) - Number(inv.amount || 0);
+          const retPct = pct(inv.amount, inv.currentValue);
+          const barW = inv.amount > 0 ? Math.min(100, (Number(inv.currentValue) / Number(inv.amount)) * 70) : 0;
+          return (
+            <div key={inv.id} className="breakdown-item">
+              <div className="breakdown-item-head">
+                <div>
+                  <div className="breakdown-desc">{inv.note || 'Investment'}</div>
+                  <div className="breakdown-date">{fmtDate(inv.date)}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--gold)' }}>{fmt(inv.currentValue)}</div>
+                  <span className={`badge ${ret >= 0 ? 'badge-green' : 'badge-red'}`} style={{ marginTop: 4 }}>{fmtPct(retPct)}</span>
+                </div>
+              </div>
+              <div className="breakdown-bar-track">
+                <div className="breakdown-bar-fill" style={{ width: `${barW}%` }} />
+              </div>
+              <div className="breakdown-nums">
+                <span>Invested: {fmt(inv.amount)}</span>
+                <span style={{ color: ret >= 0 ? 'var(--success)' : 'var(--danger)' }}>Return: {fmt(ret)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── INVESTOR: TRANSACTIONS TAB ───────────────────────────────────────────────
+function InvestorTransactions({ investments }) {
+  if (investments.length === 0) {
+    return <div className="empty-state"><div className="empty-icon">📋</div><div className="empty-text">No transactions yet</div></div>;
+  }
+  return (
+    <div>
+      <div className="sec-head">
+        <div><div className="sec-title">Transactions</div><div className="sec-sub">{investments.length} entries</div></div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Description</th><th>Amount Invested</th><th>Current Value</th><th>Return (₹)</th><th>Return %</th></tr>
+          </thead>
+          <tbody>
+            {investments.map(inv => {
+              const ret = Number(inv.currentValue || 0) - Number(inv.amount || 0);
+              const retPct = pct(inv.amount, inv.currentValue);
+              return (
+                <tr key={inv.id}>
+                  <td className="td-muted">{fmtDate(inv.date)}</td>
+                  <td className="td-name">{inv.note || '—'}</td>
+                  <td>{fmt(inv.amount)}</td>
+                  <td className="td-gold">{fmt(inv.currentValue)}</td>
+                  <td className={ret >= 0 ? 'td-green' : 'td-red'}>{fmt(ret)}</td>
+                  <td>
+                    <span className={`badge ${ret >= 0 ? 'badge-green' : 'badge-red'}`}>{fmtPct(retPct)}</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── INVESTOR: CHARTS TAB ─────────────────────────────────────────────────────
+function InvestorCharts({ investments }) {
+  if (investments.length === 0) {
+    return <div className="empty-state"><div className="empty-icon">📊</div><div className="empty-text">No data to chart yet</div></div>;
+  }
+
+  // Area chart: portfolio value over time (cumulative by date)
+  const timeData = (() => {
+    const sorted = [...investments].sort((a, b) => new Date(a.date) - new Date(b.date));
+    let cumInvested = 0, cumCurrent = 0;
+    return sorted.map(inv => {
+      cumInvested += Number(inv.amount || 0);
+      cumCurrent += Number(inv.currentValue || 0);
+      return {
+        date: fmtDate(inv.date),
+        Invested: cumInvested,
+        Value: cumCurrent,
+      };
+    });
+  })();
+
+  // Bar chart: per investment
+  const barData = investments.map(inv => ({
+    name: (inv.note || 'Investment').length > 20 ? (inv.note || 'Investment').substr(0, 18) + '…' : (inv.note || 'Investment'),
+    Invested: Number(inv.amount || 0),
+    Value: Number(inv.currentValue || 0),
+  }));
+
+  const axisStyle = { fill: '#9a9a8a', fontSize: 12, fontFamily: 'DM Sans' };
+
+  return (
+    <div>
+      <div className="chart-card">
+        <div className="chart-title">Portfolio Growth Over Time</div>
+        <ResponsiveContainer width="100%" height={280}>
+          <AreaChart data={timeData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+            <defs>
+              <linearGradient id="gradInv" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#8a6820" stopOpacity={0.4} />
+                <stop offset="95%" stopColor="#8a6820" stopOpacity={0} />
+              </linearGradient>
+              <linearGradient id="gradVal" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#c9a84c" stopOpacity={0.5} />
+                <stop offset="95%" stopColor="#c9a84c" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <XAxis dataKey="date" tick={axisStyle} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={v => '₹' + (v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v)} tick={axisStyle} axisLine={false} tickLine={false} />
+            <Tooltip content={<ChartTooltip />} />
+            <Legend wrapperStyle={{ fontSize: 12, color: '#a0a090' }} />
+            <Area type="monotone" dataKey="Invested" stroke="#8a6820" strokeWidth={2} fill="url(#gradInv)" />
+            <Area type="monotone" dataKey="Value" stroke="#c9a84c" strokeWidth={2} fill="url(#gradVal)" />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="chart-card">
+        <div className="chart-title">Invested vs Current Value — Per Investment</div>
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={barData} margin={{ top: 10, right: 10, left: 10, bottom: 30 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <XAxis dataKey="name" tick={{ ...axisStyle, fontSize: 11 }} axisLine={false} tickLine={false} angle={-20} textAnchor="end" />
+            <YAxis tickFormatter={v => '₹' + (v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v)} tick={axisStyle} axisLine={false} tickLine={false} />
+            <Tooltip content={<ChartTooltip />} />
+            <Legend wrapperStyle={{ fontSize: 12, color: '#a0a090' }} />
+            <Bar dataKey="Invested" fill="#8a6820" radius={[4,4,0,0]} />
+            <Bar dataKey="Value" fill="#c9a84c" radius={[4,4,0,0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function App() {
+  const [user, setUser] = useState(null);         // null | { type:'admin' } | { type:'investor', id, ...}
+  const [seeded, setSeeded] = useState(false);
+  const [seeding, setSeeding] = useState(true);
+
+  // Inject global CSS
+  useEffect(() => { injectStyles(); }, []);
+
+  // Seed data on first load
+  useEffect(() => {
+    seedIfEmpty()
+      .then(() => setSeeded(true))
+      .catch(err => { console.error('Seed error:', err); setSeeded(true); })
+      .finally(() => setSeeding(false));
+  }, []);
+
+  const handleLogin = useCallback((u) => setUser(u), []);
+  const handleLogout = useCallback(() => setUser(null), []);
+
+  if (seeding) {
+    return (
+      <div className="eq-app">
+        <div className="page-center">
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+            <ShieldLogo size={64} />
+            <div className="loader-wrap" style={{ padding: 0 }}>
+              <div className="spinner" />
+              <span style={{ color: 'var(--t2)', fontSize: 14 }}>Connecting to Equishield…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="eq-app">
+      {!user && <LoginPage onLogin={handleLogin} />}
+      {user?.type === 'admin' && <AdminPanel adminUser={user} onLogout={handleLogout} />}
+      {user?.type === 'investor' && <InvestorPortal investor={user} onLogout={handleLogout} />}
+    </div>
+  );
+}
