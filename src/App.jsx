@@ -1110,12 +1110,14 @@ function SettingsTab({ investors, showToast }) {
 // ─── ADMIN: % RETURNS TAB ─────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 function AdminReturnsTab({ investors, investments, showToast }) {
-  const [mode, setMode]           = useState('global');   // 'global' | 'individual'
+  const todayStr = new Date().toISOString().split('T')[0];
+  const [mode, setMode]           = useState('global');
+  const [applyDate, setApplyDate] = useState(todayStr);   // ← date picker
   const [globalPct, setGlobalPct] = useState('');
-  const [applyType, setApplyType] = useState('add');      // 'add' = add % on top of current | 'set' = set exact %
-  const [perInvPct, setPerInvPct] = useState({});         // { investorId: pct string }
+  const [applyType, setApplyType] = useState('add');
+  const [perInvPct, setPerInvPct] = useState({});
   const [applying, setApplying]   = useState(false);
-  const [preview, setPreview]     = useState(null);       // preview data before confirming
+  const [preview, setPreview]     = useState(null);
 
   // Per-investor current totals
   const investorStats = investors.map(inv => {
@@ -1141,7 +1143,8 @@ function AdminReturnsTab({ investors, investments, showToast }) {
           : inv.totalInvested * (1 + pct / 100);
         return { ...inv, newVal: Math.round(newVal) };
       });
-      setPreview({ mode: 'global', pct, applyType, rows });
+      if (!applyDate) { showToast('Select a date', 'error'); return; }
+      setPreview({ mode: 'global', pct, applyType, rows, date: applyDate });
     } else {
       const rows = investorStats.map(inv => {
         const pctStr = perInvPct[inv.id] || '';
@@ -1153,7 +1156,8 @@ function AdminReturnsTab({ investors, investments, showToast }) {
         return { ...inv, newVal: Math.round(newVal), pct };
       }).filter(r => r.newVal !== null);
       if (rows.length === 0) { showToast('Enter % for at least one investor', 'error'); return; }
-      setPreview({ mode: 'individual', applyType, rows });
+      if (!applyDate) { showToast('Select a date', 'error'); return; }
+      setPreview({ mode: 'individual', applyType, rows, date: applyDate });
     }
   };
 
@@ -1161,7 +1165,7 @@ function AdminReturnsTab({ investors, investments, showToast }) {
   const applyChanges = async () => {
     if (!preview) return;
     setApplying(true);
-    const today = new Date().toISOString().split('T')[0];
+    const snapDate = preview.date;   // ← use the date chosen by admin
     try {
       for (const row of preview.rows) {
         if (!row.newVal || row.invs.length === 0) continue;
@@ -1179,18 +1183,18 @@ function AdminReturnsTab({ investors, investments, showToast }) {
           await updateDoc(doc(db, 'investments', inv.id), { currentValue: newInvVal });
         }
 
-        // 2️⃣ Auto-save EOD snapshot for today → drives the investor chart
-        const snapId = `${row.id}_${today}`;
+        // 2️⃣ Auto-save EOD snapshot for the chosen date → drives the investor chart
+        const snapId = `${row.id}_${snapDate}`;
         await setDoc(doc(db, 'snapshots', snapId), {
-          investorId:    row.id,
-          date:          today,
-          totalValue:    row.newVal,
-          totalInvested: row.totalInvested,
-          autoFromReturns: true,   // tag so you know it was auto-generated
+          investorId:      row.id,
+          date:            snapDate,
+          totalValue:      row.newVal,
+          totalInvested:   row.totalInvested,
+          autoFromReturns: true,
         });
       }
 
-      showToast(`Returns applied & chart updated for ${preview.rows.length} investor${preview.rows.length > 1 ? 's' : ''} ✓`);
+      showToast(`Returns applied for ${fmtDate(snapDate)} — chart updated ✓`);
       setPreview(null);
       setGlobalPct('');
       setPerInvPct({});
@@ -1253,8 +1257,22 @@ function AdminReturnsTab({ investors, investments, showToast }) {
 
       {/* ── GLOBAL MODE ── */}
       {mode === 'global' && !preview && (
-        <div className="form-card" style={{ maxWidth: 420 }}>
+        <div className="form-card" style={{ maxWidth: 460 }}>
           <div className="settings-title">Apply to All Investors</div>
+
+          {/* Date picker */}
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">Date for this entry <span style={{ color: 'var(--gold)', fontSize: 10 }}>★ appears on investor chart</span></label>
+              <input className="field-input" type="date" value={applyDate}
+                onChange={e => setApplyDate(e.target.value)}
+                max={todayStr} />
+              <span style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3 }}>
+                Defaults to today. Change to backfill a missed date.
+              </span>
+            </div>
+          </div>
+
           <div className="form-row">
             <div className="field">
               <label className="field-label">Return % <span style={{ color: 'var(--t3)', fontWeight: 400 }}>({applyType === 'add' ? 'added on current value' : 'total % from invested'})</span></label>
@@ -1268,9 +1286,9 @@ function AdminReturnsTab({ investors, investments, showToast }) {
             </div>
           </div>
           <div style={{ background: 'var(--bg2)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: 'var(--t2)' }}>
-            This will update the <strong style={{ color: 'var(--t1)' }}>current value</strong> of every investment for all {investors.length} investors.
+            This will update the <strong style={{ color: 'var(--t1)' }}>current value</strong> of every investment for all {investors.length} investors and add a chart point for <strong style={{ color: 'var(--gold)' }}>{fmtDate(applyDate)}</strong>.
           </div>
-          <button className="btn btn-primary" onClick={buildPreview} disabled={!globalPct}>
+          <button className="btn btn-primary" onClick={buildPreview} disabled={!globalPct || !applyDate}>
             Preview Changes →
           </button>
         </div>
@@ -1279,6 +1297,18 @@ function AdminReturnsTab({ investors, investments, showToast }) {
       {/* ── INDIVIDUAL MODE ── */}
       {mode === 'individual' && !preview && (
         <div>
+          {/* Date picker for individual mode */}
+          <div className="form-card" style={{ maxWidth: 460, marginBottom: 16 }}>
+            <div className="field">
+              <label className="field-label">Date for this entry <span style={{ color: 'var(--gold)', fontSize: 10 }}>★ appears on investor chart</span></label>
+              <input className="field-input" type="date" value={applyDate}
+                onChange={e => setApplyDate(e.target.value)}
+                max={todayStr} />
+              <span style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3 }}>
+                Defaults to today. Change to backfill a missed date.
+              </span>
+            </div>
+          </div>
           <div style={{ background: 'var(--bg3)', border: '1px solid var(--bord)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 16 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
@@ -1350,10 +1380,13 @@ function AdminReturnsTab({ investors, investments, showToast }) {
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--gold)', marginBottom: 4 }}>
               ⚠️ Review before applying
             </div>
-            <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 16 }}>
+            <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 4 }}>
               {preview.mode === 'global'
-                ? `This will apply ${preview.pct > 0 ? '+' : ''}${preview.pct}% (${preview.applyType === 'add' ? 'added on current' : 'set from invested'}) to all ${preview.rows.length} investors`
-                : `This will update ${preview.rows.length} investor${preview.rows.length > 1 ? 's' : ''} with individual rates`}
+                ? `Applying ${preview.pct > 0 ? '+' : ''}${preview.pct}% (${preview.applyType === 'add' ? 'on current' : 'from invested'}) to all ${preview.rows.length} investors`
+                : `Updating ${preview.rows.length} investor${preview.rows.length > 1 ? 's' : ''} with individual rates`}
+            </div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'var(--goldbg)', border: '1px solid var(--goldbord)', borderRadius: 6, padding: '4px 12px', fontSize: 12, color: 'var(--gold)', fontWeight: 600, marginBottom: 16 }}>
+              📅 Chart point added for: {fmtDate(preview.date)}
             </div>
             <div style={{ overflow: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
