@@ -1924,77 +1924,121 @@ function InvestorCharts({ investments, snapshots }) {
     return <div className="empty-state"><div className="empty-icon">📊</div><div className="empty-text">No data to chart yet</div></div>;
   }
 
-  const hasSnapshots = snapshots && snapshots.length > 0;
+  const todayStr = new Date().toISOString().split('T')[0];
 
-  // Use real EOD snapshots if available, else fall back to investment dates
+  // Sort investments by date ascending
+  const sortedInv = [...investments].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  // The very first investment date — chart always starts here
+  const firstInvDate = sortedInv[0].date;
+
+  // Total currently invested across all investments
+  const totalInvested = sortedInv.reduce((s, x) => s + Number(x.amount || 0), 0);
+  // Total current value right now
+  const totalCurrentNow = sortedInv.reduce((s, x) => s + Number(x.currentValue || 0), 0);
+
+  // ── BUILD TIMELINE ────────────────────────────────────────────────────────
+  // Strategy:
+  //   Point A  : first investment date  → Value = totalInvested (day 0, no gain yet)
+  //   Points B : all EOD snapshots sorted by date (skip any before firstInvDate)
+  //   Point C  : today → Value = current live value from Firestore
+  //   De-dupe  : if a snapshot already covers today or firstInvDate, don't double-add
+
   const timeData = (() => {
-    if (hasSnapshots) {
-      return [...snapshots]
-        .sort((a, b) => a.date.localeCompare(b.date))
-        .map(s => ({
-          date:     s.date,
-          Invested: Number(s.totalInvested || 0),
-          Value:    Number(s.totalValue    || 0),
-        }));
-    }
-    const sorted = [...investments].sort((a, b) => new Date(a.date) - new Date(b.date));
-    let ci = 0, cv = 0;
-    return sorted.map(inv => {
-      ci += Number(inv.amount || 0);
-      cv += Number(inv.currentValue || 0);
-      return { date: inv.date, Invested: ci, Value: cv };
+    const points = [];
+
+    // 1. Starting point — investment date (value = what was invested, no return yet)
+    points.push({
+      date:     firstInvDate,
+      Invested: totalInvested,
+      Value:    totalInvested,   // on day 0, current = invested (0% return)
     });
+
+    // 2. All snapshots that fall AFTER the first investment date
+    const snapshotsSorted = (snapshots || [])
+      .filter(s => s.date > firstInvDate && s.date <= todayStr)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    for (const s of snapshotsSorted) {
+      // Don't add if same date already in points
+      if (points[points.length - 1].date !== s.date) {
+        points.push({
+          date:     s.date,
+          Invested: Number(s.totalInvested || totalInvested),
+          Value:    Number(s.totalValue    || 0),
+        });
+      } else {
+        // Overwrite with snapshot data (more accurate)
+        points[points.length - 1].Value    = Number(s.totalValue    || 0);
+        points[points.length - 1].Invested = Number(s.totalInvested || totalInvested);
+      }
+    }
+
+    // 3. Always end with TODAY using the live current values from Firestore
+    //    (only add if the last point isn't already today)
+    if (points[points.length - 1].date !== todayStr) {
+      points.push({
+        date:     todayStr,
+        Invested: totalInvested,
+        Value:    totalCurrentNow,
+      });
+    } else {
+      // Make sure today's point reflects the latest live data
+      points[points.length - 1].Value    = totalCurrentNow;
+      points[points.length - 1].Invested = totalInvested;
+    }
+
+    return points;
   })();
 
-  // Pick exactly 3-4 evenly spaced X-axis ticks
+  // ── SMART X-AXIS: always show exactly 4 ticks ─────────────────────────────
+  // Always include: first date, today, and 2 evenly spaced in between
   const smartTicks = (() => {
     if (timeData.length <= 4) return timeData.map(d => d.date);
-    const count = 4;
-    const step  = (timeData.length - 1) / (count - 1);
-    return Array.from({ length: count }, (_, i) => timeData[Math.round(i * step)].date);
+    const first = timeData[0].date;
+    const last  = timeData[timeData.length - 1].date;
+    const mid1  = timeData[Math.round((timeData.length - 1) / 3)].date;
+    const mid2  = timeData[Math.round((timeData.length - 1) * 2 / 3)].date;
+    // Dedupe in case mid points coincide with first/last
+    return [...new Set([first, mid1, mid2, last])];
   })();
 
-  // Auto-format tick label based on total time span
-  const totalDays = timeData.length > 1
-    ? (new Date(timeData[timeData.length - 1].date) - new Date(timeData[0].date)) / 86400000
-    : 0;
+  // ── TICK LABEL FORMAT based on total time span ────────────────────────────
+  const totalDays = (new Date(todayStr) - new Date(firstInvDate)) / 86400000;
   const fmtTick = (d) => {
     if (!d) return '';
-    const dt = new Date(d);
-    if (totalDays <= 60)  return dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-    if (totalDays <= 400) return dt.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+    const dt = new Date(d + 'T00:00:00'); // avoid timezone shift
+    if (d === todayStr)      return 'Today';
+    if (totalDays <= 60)     return dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+    if (totalDays <= 400)    return dt.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
     return dt.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
   };
 
-  // Bar chart
-  const barData = [...investments]
-    .sort((a, b) => new Date(a.date) - new Date(b.date))
-    .map(inv => ({
-      name:     (inv.note || 'Inv').length > 16 ? (inv.note||'Inv').substr(0,14)+'…' : (inv.note||'Inv'),
-      Invested: Number(inv.amount       || 0),
-      Value:    Number(inv.currentValue || 0),
-    }));
+  // ── BAR CHART data ────────────────────────────────────────────────────────
+  const barData = sortedInv.map(inv => ({
+    name:     (inv.note || 'Inv').length > 16 ? (inv.note || 'Inv').substr(0, 14) + '…' : (inv.note || 'Inv'),
+    Invested: Number(inv.amount       || 0),
+    Value:    Number(inv.currentValue || 0),
+  }));
 
   const axisStyle = { fill: '#9a9a8a', fontSize: 11, fontFamily: 'Calibri' };
   const fmtY = v => '₹' + (v >= 1e7 ? (v/1e7).toFixed(1)+'Cr' : v >= 1e5 ? (v/1e5).toFixed(1)+'L' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v);
 
-  const firstDate = timeData.length ? timeData[0].date : null;
-  const lastDate  = timeData.length ? timeData[timeData.length - 1].date : null;
-  const todayStr  = new Date().toISOString().split('T')[0];
-  const rangeLabel = firstDate
-    ? `${fmtDate(firstDate)} → ${lastDate === todayStr ? 'Today' : fmtDate(lastDate)}  ·  ${timeData.length} data point${timeData.length !== 1 ? 's' : ''}`
-    : '';
+  const rangeLabel = `${fmtDate(firstInvDate)} → Today  ·  ${timeData.length} data point${timeData.length !== 1 ? 's' : ''}`;
+  const hasSnapshots = snapshots && snapshots.length > 0;
 
   return (
     <div>
       <div className="chart-card">
         <div className="chart-title">Portfolio Value Over Time</div>
-        {rangeLabel && <div style={{ fontSize: 12, color: 'var(--t2)', marginBottom: 14, marginTop: -6 }}>{rangeLabel}</div>}
+        <div style={{ fontSize: 12, color: 'var(--t2)', marginBottom: 14, marginTop: -6 }}>{rangeLabel}</div>
+
         {!hasSnapshots && (
           <div style={{ background: 'rgba(201,168,76,0.07)', border: '1px solid var(--goldbord)', borderRadius: 8, padding: '9px 14px', marginBottom: 14, fontSize: 12, color: 'var(--t2)' }}>
-            Showing investment dates only. For daily history, admin records EOD values in the <strong style={{ color: 'var(--gold)' }}>EOD Values</strong> tab.
+            Chart shows investment start → today. For a detailed daily curve, ask your portfolio manager to record daily EOD values via the <strong style={{ color: 'var(--gold)' }}>% Returns</strong> tab.
           </div>
         )}
+
         <ResponsiveContainer width="100%" height={300}>
           <AreaChart data={timeData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
             <defs>
@@ -2017,7 +2061,7 @@ function InvestorCharts({ investments, snapshots }) {
               tickLine={false}
               interval={0}
             />
-            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={58} />
+            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={62} />
             <Tooltip
               content={({ active, payload, label }) => {
                 if (!active || !payload?.length) return null;
@@ -2026,11 +2070,11 @@ function InvestorCharts({ investments, snapshots }) {
                 const ret = val - inv;
                 return (
                   <div className="custom-tooltip">
-                    <div className="ct-label">{fmtDate(label)}</div>
+                    <div className="ct-label">{label === todayStr ? 'Today' : fmtDate(label)}</div>
                     <div style={{ color: '#8a6820', fontWeight: 600, fontSize: 13 }}>Invested: {fmt(inv)}</div>
                     <div style={{ color: '#c9a84c', fontWeight: 600, fontSize: 13 }}>Value: {fmt(val)}</div>
                     <div style={{ color: ret >= 0 ? 'var(--success)' : 'var(--danger)', fontSize: 12, marginTop: 4 }}>
-                      Return: {fmt(ret)} ({fmtPct(inv > 0 ? (ret/inv)*100 : 0)})
+                      Return: {fmt(ret)} ({fmtPct(inv > 0 ? (ret / inv) * 100 : 0)})
                     </div>
                   </div>
                 );
@@ -2051,11 +2095,11 @@ function InvestorCharts({ investments, snapshots }) {
           <BarChart data={barData} margin={{ top: 10, right: 10, left: 10, bottom: 32 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
             <XAxis dataKey="name" tick={{ ...axisStyle, fontSize: 11 }} axisLine={false} tickLine={false} angle={-18} textAnchor="end" interval={0} />
-            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={58} />
+            <YAxis tickFormatter={fmtY} tick={axisStyle} axisLine={false} tickLine={false} width={62} />
             <Tooltip content={<ChartTooltip />} />
             <Legend wrapperStyle={{ fontSize: 12, color: '#a0a090' }} />
-            <Bar dataKey="Invested" fill="#8a6820" radius={[4,4,0,0]} />
-            <Bar dataKey="Value"    fill="#c9a84c" radius={[4,4,0,0]} />
+            <Bar dataKey="Invested" fill="#8a6820" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="Value"    fill="#c9a84c" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>
