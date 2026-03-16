@@ -598,13 +598,14 @@ function AdminPanel({ adminUser, onLogout }) {
 
   const pendingWd = withdrawals.filter(w => w.status === 'pending').length;
   const tabs = [
-    { id: 'investors',    label: 'Investors' },
-    { id: 'investments',  label: 'Investments' },
-    { id: 'eod',          label: 'EOD Values' },
-    { id: 'withdrawals',  label: `Withdrawals${pendingWd > 0 ? ` (${pendingWd})` : ''}` },
+    { id: 'investors',       label: 'Investors' },
+    { id: 'investments',     label: 'Investments' },
+    { id: 'returns',         label: '% Returns' },
+    { id: 'eod',             label: 'EOD Values' },
+    { id: 'withdrawals',     label: `Withdrawals${pendingWd > 0 ? ` (${pendingWd})` : ''}` },
     { id: 'add-investor',    label: 'Add Investor' },
     { id: 'add-investment',  label: 'Add Investment' },
-    { id: 'settings',     label: 'Settings' },
+    { id: 'settings',        label: 'Settings' },
   ];
 
   return (
@@ -655,6 +656,7 @@ function AdminPanel({ adminUser, onLogout }) {
 
         {tab === 'investors' && <AdminInvestorsTab investors={investors} investments={investments} showToast={showToast} />}
         {tab === 'investments' && <AdminInvestmentsTab investors={investors} investments={investments} showToast={showToast} />}
+        {tab === 'returns' && <AdminReturnsTab investors={investors} investments={investments} showToast={showToast} />}
         {tab === 'eod' && <AdminEODTab investors={investors} investments={investments} snapshots={snapshots} showToast={showToast} />}
         {tab === 'withdrawals' && <AdminWithdrawalsTab withdrawals={withdrawals} investors={investors} investments={investments} showToast={showToast} />}
         {tab === 'add-investor' && <AddInvestorTab onDone={() => setTab('investors')} showToast={showToast} />}
@@ -1100,6 +1102,286 @@ function SettingsTab({ investors, showToast }) {
           <button className="btn btn-primary" type="submit" disabled={savingInv}>{savingInv ? 'Saving…' : 'Update Investor'}</button>
         </form>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── ADMIN: % RETURNS TAB ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+function AdminReturnsTab({ investors, investments, showToast }) {
+  const [mode, setMode]           = useState('global');   // 'global' | 'individual'
+  const [globalPct, setGlobalPct] = useState('');
+  const [applyType, setApplyType] = useState('add');      // 'add' = add % on top of current | 'set' = set exact %
+  const [perInvPct, setPerInvPct] = useState({});         // { investorId: pct string }
+  const [applying, setApplying]   = useState(false);
+  const [preview, setPreview]     = useState(null);       // preview data before confirming
+
+  // Per-investor current totals
+  const investorStats = investors.map(inv => {
+    const invs = investments.filter(x => x.investorId === inv.id);
+    const totalInvested = invs.reduce((s, x) => s + Number(x.amount || 0), 0);
+    const totalCurrent  = invs.reduce((s, x) => s + Number(x.currentValue || 0), 0);
+    return { ...inv, invs, totalInvested, totalCurrent };
+  });
+
+  // ── PREVIEW CALCULATOR ────────────────────────────────────────────────────
+  const buildPreview = () => {
+    if (mode === 'global') {
+      const pct = parseFloat(globalPct);
+      if (isNaN(pct)) { showToast('Enter a valid %', 'error'); return; }
+      const rows = investorStats.map(inv => {
+        const newCurrent = applyType === 'add'
+          ? inv.totalInvested * (1 + pct / 100)
+          : inv.totalInvested * (1 + pct / 100);
+        // 'set' mode: new current = invested * (1 + pct/100)
+        // 'add' mode: new current = current * (1 + pct/100)
+        const newVal = applyType === 'add'
+          ? inv.totalCurrent * (1 + pct / 100)
+          : inv.totalInvested * (1 + pct / 100);
+        return { ...inv, newVal: Math.round(newVal) };
+      });
+      setPreview({ mode: 'global', pct, applyType, rows });
+    } else {
+      const rows = investorStats.map(inv => {
+        const pctStr = perInvPct[inv.id] || '';
+        const pct = parseFloat(pctStr);
+        if (pctStr === '' || isNaN(pct)) return { ...inv, newVal: null, pct: null };
+        const newVal = applyType === 'add'
+          ? inv.totalCurrent * (1 + pct / 100)
+          : inv.totalInvested * (1 + pct / 100);
+        return { ...inv, newVal: Math.round(newVal), pct };
+      }).filter(r => r.newVal !== null);
+      if (rows.length === 0) { showToast('Enter % for at least one investor', 'error'); return; }
+      setPreview({ mode: 'individual', applyType, rows });
+    }
+  };
+
+  // ── APPLY TO FIRESTORE ────────────────────────────────────────────────────
+  const applyChanges = async () => {
+    if (!preview) return;
+    setApplying(true);
+    try {
+      for (const row of preview.rows) {
+        if (!row.newVal || row.invs.length === 0) continue;
+        // Distribute new total value proportionally across investments
+        const totalOldCurrent = row.invs.reduce((s, x) => s + Number(x.currentValue || 0), 0);
+        for (const inv of row.invs) {
+          let newInvVal;
+          if (totalOldCurrent > 0) {
+            // Proportional distribution
+            const share = Number(inv.currentValue) / totalOldCurrent;
+            newInvVal = Math.round(row.newVal * share);
+          } else {
+            // Equal distribution if all zeros
+            newInvVal = Math.round(row.newVal / row.invs.length);
+          }
+          await updateDoc(doc(db, 'investments', inv.id), { currentValue: newInvVal });
+        }
+      }
+      showToast(`Returns applied to ${preview.rows.length} investor${preview.rows.length > 1 ? 's' : ''} ✓`);
+      setPreview(null);
+      setGlobalPct('');
+      setPerInvPct({});
+    } catch (err) {
+      showToast('Failed to apply', 'error');
+      console.error(err);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="sec-head">
+        <div>
+          <div className="sec-title">Update % Returns</div>
+          <div className="sec-sub">Apply a return % to all investors at once, or set individual rates</div>
+        </div>
+      </div>
+
+      {/* Mode switcher */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+        <button
+          className={`btn ${mode === 'global' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => { setMode('global'); setPreview(null); }}>
+          🌐 Apply to All Investors
+        </button>
+        <button
+          className={`btn ${mode === 'individual' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => { setMode('individual'); setPreview(null); }}>
+          👤 Per Investor
+        </button>
+      </div>
+
+      {/* Apply type switcher */}
+      <div style={{ background: 'var(--bg3)', border: '1px solid var(--bord)', borderRadius: 'var(--radius)', padding: '16px 20px', marginBottom: 20 }}>
+        <div style={{ fontSize: 12, color: 'var(--t2)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 12, fontWeight: 600 }}>
+          How to apply the %
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            className={`btn btn-sm ${applyType === 'add' ? '' : 'btn-ghost'}`}
+            style={applyType === 'add' ? { background: 'var(--goldbg)', color: 'var(--gold)', border: '1px solid var(--goldbord)' } : {}}
+            onClick={() => setApplyType('add')}>
+            Add % on current value
+          </button>
+          <button
+            className={`btn btn-sm ${applyType === 'set' ? '' : 'btn-ghost'}`}
+            style={applyType === 'set' ? { background: 'var(--goldbg)', color: 'var(--gold)', border: '1px solid var(--goldbord)' } : {}}
+            onClick={() => setApplyType('set')}>
+            Set % from invested amount
+          </button>
+        </div>
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--t3)' }}>
+          {applyType === 'add'
+            ? '📈 "Add" — e.g. if current value is ₹1,00,000 and you enter 2%, new value = ₹1,02,000 (grow by 2% each day)'
+            : '📌 "Set" — e.g. if invested is ₹1,00,000 and you enter 15%, current value becomes ₹1,15,000 (total return from cost)'}
+        </div>
+      </div>
+
+      {/* ── GLOBAL MODE ── */}
+      {mode === 'global' && !preview && (
+        <div className="form-card" style={{ maxWidth: 420 }}>
+          <div className="settings-title">Apply to All Investors</div>
+          <div className="form-row">
+            <div className="field">
+              <label className="field-label">Return % <span style={{ color: 'var(--t3)', fontWeight: 400 }}>({applyType === 'add' ? 'added on current value' : 'total % from invested'})</span></label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input className="field-input" type="number" step="0.01"
+                  placeholder={applyType === 'add' ? 'e.g. 1.5 (daily gain %)' : 'e.g. 18 (total return %)'}
+                  value={globalPct} onChange={e => setGlobalPct(e.target.value)}
+                  style={{ flex: 1 }} />
+                <span style={{ color: 'var(--gold)', fontWeight: 700, fontSize: 18 }}>%</span>
+              </div>
+            </div>
+          </div>
+          <div style={{ background: 'var(--bg2)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: 'var(--t2)' }}>
+            This will update the <strong style={{ color: 'var(--t1)' }}>current value</strong> of every investment for all {investors.length} investors.
+          </div>
+          <button className="btn btn-primary" onClick={buildPreview} disabled={!globalPct}>
+            Preview Changes →
+          </button>
+        </div>
+      )}
+
+      {/* ── INDIVIDUAL MODE ── */}
+      {mode === 'individual' && !preview && (
+        <div>
+          <div style={{ background: 'var(--bg3)', border: '1px solid var(--bord)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 16 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg2)' }}>
+                  <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t2)', fontWeight: 500 }}>Investor</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t2)', fontWeight: 500 }}>Invested</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t2)', fontWeight: 500 }}>Current</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'center', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t2)', fontWeight: 500 }}>Enter %</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t2)', fontWeight: 500 }}>Preview Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {investorStats.map(inv => {
+                  const pctStr = perInvPct[inv.id] || '';
+                  const pct = parseFloat(pctStr);
+                  const previewVal = !isNaN(pct) && pctStr !== ''
+                    ? (applyType === 'add'
+                        ? inv.totalCurrent * (1 + pct / 100)
+                        : inv.totalInvested * (1 + pct / 100))
+                    : null;
+                  const diff = previewVal !== null ? previewVal - inv.totalCurrent : null;
+                  return (
+                    <tr key={inv.id} style={{ borderBottom: '1px solid var(--bord)' }}>
+                      <td style={{ padding: '12px 16px' }}>
+                        <div style={{ fontWeight: 600, color: 'var(--t1)', fontSize: 14 }}>{inv.name}</div>
+                        <div style={{ fontSize: 11, color: 'var(--t2)' }}>{inv.invs.length} investment{inv.invs.length !== 1 ? 's' : ''}</div>
+                      </td>
+                      <td style={{ padding: '12px 16px', textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{fmt(inv.totalInvested)}</td>
+                      <td style={{ padding: '12px 16px', textAlign: 'right', fontSize: 13, color: 'var(--gold)', fontWeight: 600 }}>{fmt(inv.totalCurrent)}</td>
+                      <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                          <input
+                            style={{ width: 80, background: 'var(--bg2)', border: '1px solid var(--bord)', borderRadius: 6, padding: '6px 8px', fontSize: 14, color: 'var(--t1)', fontFamily: 'var(--fb)', outline: 'none', textAlign: 'center' }}
+                            type="number" step="0.01" placeholder="0.00"
+                            value={pctStr}
+                            onChange={e => setPerInvPct(prev => ({ ...prev, [inv.id]: e.target.value }))}
+                            onFocus={e => e.target.style.borderColor = 'var(--gold)'}
+                            onBlur={e => e.target.style.borderColor = 'var(--bord)'}
+                          />
+                          <span style={{ color: 'var(--gold)', fontWeight: 700 }}>%</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                        {previewVal !== null ? (
+                          <div>
+                            <div style={{ fontWeight: 700, color: 'var(--gold)', fontSize: 14 }}>{fmt(Math.round(previewVal))}</div>
+                            <div style={{ fontSize: 11, color: diff >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                              {diff >= 0 ? '+' : ''}{fmt(Math.round(diff))}
+                            </div>
+                          </div>
+                        ) : <span style={{ color: 'var(--t3)', fontSize: 13 }}>—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <button className="btn btn-primary" onClick={buildPreview}>
+            Preview Changes →
+          </button>
+        </div>
+      )}
+
+      {/* ── PREVIEW CONFIRMATION ── */}
+      {preview && (
+        <div>
+          <div style={{ background: 'var(--bg3)', border: '1px solid var(--goldbord)', borderRadius: 'var(--radius)', padding: '20px', marginBottom: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--gold)', marginBottom: 4 }}>
+              ⚠️ Review before applying
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 16 }}>
+              {preview.mode === 'global'
+                ? `This will apply ${preview.pct > 0 ? '+' : ''}${preview.pct}% (${preview.applyType === 'add' ? 'added on current' : 'set from invested'}) to all ${preview.rows.length} investors`
+                : `This will update ${preview.rows.length} investor${preview.rows.length > 1 ? 's' : ''} with individual rates`}
+            </div>
+            <div style={{ overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg2)' }}>
+                    <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--t2)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Investor</th>
+                    {preview.mode === 'individual' && <th style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--t2)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>%</th>}
+                    <th style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Old Value</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>New Value</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.rows.map(row => {
+                    const diff = row.newVal - row.totalCurrent;
+                    return (
+                      <tr key={row.id} style={{ borderBottom: '1px solid var(--bord)' }}>
+                        <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--t1)' }}>{row.name}</td>
+                        {preview.mode === 'individual' && <td style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--gold)', fontWeight: 700 }}>{row.pct > 0 ? '+' : ''}{row.pct}%</td>}
+                        <td style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)' }}>{fmt(row.totalCurrent)}</td>
+                        <td style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--gold)', fontWeight: 700 }}>{fmt(row.newVal)}</td>
+                        <td style={{ padding: '10px 14px', textAlign: 'right', color: diff >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>
+                          {diff >= 0 ? '+' : ''}{fmt(diff)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button className="btn btn-primary" onClick={applyChanges} disabled={applying}>
+              {applying ? 'Applying…' : `✓ Apply to ${preview.rows.length} Investor${preview.rows.length > 1 ? 's' : ''}`}
+            </button>
+            <button className="btn btn-ghost" onClick={() => setPreview(null)}>← Edit</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
