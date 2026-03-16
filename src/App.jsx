@@ -1157,29 +1157,40 @@ function AdminReturnsTab({ investors, investments, showToast }) {
     }
   };
 
-  // ── APPLY TO FIRESTORE ────────────────────────────────────────────────────
+  // ── APPLY TO FIRESTORE + AUTO-SAVE EOD SNAPSHOT ──────────────────────────
   const applyChanges = async () => {
     if (!preview) return;
     setApplying(true);
+    const today = new Date().toISOString().split('T')[0];
     try {
       for (const row of preview.rows) {
         if (!row.newVal || row.invs.length === 0) continue;
-        // Distribute new total value proportionally across investments
+
+        // 1️⃣ Distribute new total value proportionally across investments
         const totalOldCurrent = row.invs.reduce((s, x) => s + Number(x.currentValue || 0), 0);
         for (const inv of row.invs) {
           let newInvVal;
           if (totalOldCurrent > 0) {
-            // Proportional distribution
             const share = Number(inv.currentValue) / totalOldCurrent;
             newInvVal = Math.round(row.newVal * share);
           } else {
-            // Equal distribution if all zeros
             newInvVal = Math.round(row.newVal / row.invs.length);
           }
           await updateDoc(doc(db, 'investments', inv.id), { currentValue: newInvVal });
         }
+
+        // 2️⃣ Auto-save EOD snapshot for today → drives the investor chart
+        const snapId = `${row.id}_${today}`;
+        await setDoc(doc(db, 'snapshots', snapId), {
+          investorId:    row.id,
+          date:          today,
+          totalValue:    row.newVal,
+          totalInvested: row.totalInvested,
+          autoFromReturns: true,   // tag so you know it was auto-generated
+        });
       }
-      showToast(`Returns applied to ${preview.rows.length} investor${preview.rows.length > 1 ? 's' : ''} ✓`);
+
+      showToast(`Returns applied & chart updated for ${preview.rows.length} investor${preview.rows.length > 1 ? 's' : ''} ✓`);
       setPreview(null);
       setGlobalPct('');
       setPerInvPct({});
